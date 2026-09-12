@@ -14,7 +14,12 @@ import { ReferAndEarnHub } from "./ReferAndEarnHub";
 import { GeminiApiKeyModal } from "./GeminiApiKeyModal";
 import { SubscriptionModal } from "./SubscriptionModal";
 import { hasCustomGeminiApiKey } from "../utils/geminiKeyStorage";
-import { loadSubscriptionState, SubscriptionState } from "../utils/subscriptionStore";
+import { 
+  loadSubscriptionState, 
+  SubscriptionState, 
+  getActiveSubscriptionPlans, 
+  SubscriptionPlan 
+} from "../utils/subscriptionStore";
 
 interface LearnerProfileModalProps {
   isOpen: boolean;
@@ -31,6 +36,7 @@ export const LearnerProfileModal: React.FC<LearnerProfileModalProps> = ({
 }) => {
   const [profile, setProfile] = useState<StudentProfile>(loadStudentProfile());
   const [subState, setSubState] = useState<SubscriptionState>(loadSubscriptionState());
+  const [plans, setPlans] = useState<SubscriptionPlan[]>(() => getActiveSubscriptionPlans());
   const [activeTab, setActiveTab] = useState<"weak_topics" | "subscription" | "refer_earn" | "history" | "privacy" | "settings">("weak_topics");
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
@@ -39,9 +45,25 @@ export const LearnerProfileModal: React.FC<LearnerProfileModalProps> = ({
   const t = getTranslations(profile.preferredLanguage);
 
   useEffect(() => {
+    const handleSubUpdated = (e: any) => {
+      setSubState(e.detail || loadSubscriptionState());
+    };
+    const handlePlansUpdated = (e: any) => {
+      setPlans(e.detail || getActiveSubscriptionPlans());
+    };
+    window.addEventListener("cherry_subscription_updated", handleSubUpdated);
+    window.addEventListener("cherry_plans_updated", handlePlansUpdated);
+    return () => {
+      window.removeEventListener("cherry_subscription_updated", handleSubUpdated);
+      window.removeEventListener("cherry_plans_updated", handlePlansUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
     if (isOpen) {
       setProfile(loadStudentProfile());
       setSubState(loadSubscriptionState());
+      setPlans(getActiveSubscriptionPlans());
       setHasCustomKey(hasCustomGeminiApiKey());
     }
   }, [isOpen]);
@@ -199,33 +221,39 @@ export const LearnerProfileModal: React.FC<LearnerProfileModalProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                  <span className="text-[10px] font-mono text-slate-500 uppercase block font-bold">Monthly Pass</span>
-                  <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-base font-black text-slate-900">₹199</span>
-                    <span className="text-[10px] text-slate-400">/mo</span>
-                  </div>
-                  <p className="text-[10px] text-slate-600 mt-1">Unlimited 1-on-1 AI Classroom & Smart Handbooks</p>
-                </div>
-
-                <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-200 relative">
-                  <span className="absolute top-2 right-2 px-1.5 py-0.2 rounded bg-indigo-600 text-white text-[8.5px] font-black uppercase">Popular</span>
-                  <span className="text-[10px] font-mono text-indigo-700 uppercase block font-bold">Exam Booster</span>
-                  <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-base font-black text-indigo-950">₹499</span>
-                    <span className="text-[10px] text-indigo-600">/3 mos</span>
-                  </div>
-                  <p className="text-[10px] text-slate-600 mt-1">10-Yr PYQs + Weightage Heatmap + Voice Counselor</p>
-                </div>
-
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                  <span className="text-[10px] font-mono text-slate-500 uppercase block font-bold">Annual Master</span>
-                  <div className="flex items-baseline gap-1 mt-1">
-                    <span className="text-base font-black text-slate-900">₹1,499</span>
-                    <span className="text-[10px] text-slate-400">/year</span>
-                  </div>
-                  <p className="text-[10px] text-slate-600 mt-1">Full 365 Days Unlimited Access for JEE / NEET / CBSE</p>
-                </div>
+                {(plans && plans.length > 0 ? plans.slice(0, 3) : []).map((p) => {
+                  const isPopular = p.isPopular || p.id === "semiannual_149" || p.id === "quarterly";
+                  return (
+                    <div
+                      key={p.id}
+                      className={`p-3 rounded-xl border relative ${
+                        isPopular
+                          ? "bg-indigo-50/70 border-indigo-200"
+                          : "bg-slate-50 border-slate-200"
+                      }`}
+                    >
+                      {isPopular && (
+                        <span className="absolute top-2 right-2 px-1.5 py-0.2 rounded bg-indigo-600 text-white text-[8.5px] font-black uppercase">
+                          Popular
+                        </span>
+                      )}
+                      <span className={`text-[10px] font-mono uppercase block font-bold ${isPopular ? "text-indigo-700" : "text-slate-500"}`}>
+                        {p.name}
+                      </span>
+                      <div className="flex items-baseline gap-1 mt-1">
+                        <span className={`text-base font-black ${isPopular ? "text-indigo-950" : "text-slate-900"}`}>
+                          ₹{p.priceINR}
+                        </span>
+                        <span className={`text-[10px] ${isPopular ? "text-indigo-600" : "text-slate-400"}`}>
+                          /{p.durationMonths} mo{p.durationMonths > 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-600 mt-1 line-clamp-2">
+                        {p.features && p.features[0] ? p.features[0] : "Full 1-on-1 AI Classroom & Smart Handbooks"}
+                      </p>
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between text-xs">

@@ -45,8 +45,37 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
   onToast,
   onClose,
 }) => {
+  const effectiveUid = useMemo(() => {
+    if (userUid && userUid !== "local_learner") return userUid;
+    try {
+      const localUserRaw = localStorage.getItem("local_active_user");
+      if (localUserRaw) {
+        const parsed = JSON.parse(localUserRaw);
+        if (parsed?.uid) return parsed.uid;
+      }
+    } catch (_) {}
+    return userUid || "";
+  }, [userUid]);
+
+  const effectiveName = useMemo(() => {
+    if (studentName && studentName !== "Student") return studentName;
+    try {
+      const localUserRaw = localStorage.getItem("local_active_user");
+      if (localUserRaw) {
+        const parsed = JSON.parse(localUserRaw);
+        if (parsed?.displayName) return parsed.displayName;
+      }
+      const profRaw = localStorage.getItem("cherry_student_profile");
+      if (profRaw) {
+        const prof = JSON.parse(profRaw);
+        if (prof?.name) return prof.name;
+      }
+    } catch (_) {}
+    return studentName || "Student";
+  }, [studentName]);
+
   const [refState, setRefState] = useState<ReferralAccountState>(() =>
-    loadReferralState(studentName, userUid)
+    loadReferralState(effectiveName, effectiveUid)
   );
   const [commissionConfig, setCommissionConfig] = useState<ReferralCommissionConfig>(() =>
     getReferralCommissionConfig()
@@ -59,6 +88,38 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
   );
   const [withdrawUpi, setWithdrawUpi] = useState<string>("");
   const [activeTab, setActiveTab] = useState<"plan" | "calculator" | "history" | "rules">("plan");
+
+  // Real-time synchronization with Admin referral actions (payout approvals, wallet adjustments)
+  useEffect(() => {
+    const handleReferralsUpdated = (e: any) => {
+      const updatedAccount = loadReferralState(effectiveName, effectiveUid);
+      setRefState((prev) => {
+        // Check if an admin approved a withdrawal request in real time
+        const newlyPaid = updatedAccount.withdrawals.find(
+          (fw) =>
+            fw.status === "successful" &&
+            prev.withdrawals.some((pw) => pw.id === fw.id && pw.status !== "successful")
+        );
+        if (newlyPaid && onToast) {
+          onToast(
+            `🎉 Payout Approved! ₹${newlyPaid.amount} transferred to ${newlyPaid.upiId} (UTR: ${newlyPaid.utrNumber || "Verified"}).`,
+            "success"
+          );
+        }
+        // Check if wallet balance was directly credited by admin
+        if (updatedAccount.walletBalance > prev.walletBalance && !newlyPaid && onToast) {
+          const diff = updatedAccount.walletBalance - prev.walletBalance;
+          onToast(`💰 Wallet Credited! +₹${diff} added to your referral balance.`, "success");
+        }
+        return updatedAccount;
+      });
+    };
+
+    window.addEventListener("cherry_referrals_updated", handleReferralsUpdated);
+    return () => {
+      window.removeEventListener("cherry_referrals_updated", handleReferralsUpdated);
+    };
+  }, [effectiveName, effectiveUid, onToast]);
 
   // Sync with dynamic commission config updates (local events + cloud sync on mount)
   useEffect(() => {

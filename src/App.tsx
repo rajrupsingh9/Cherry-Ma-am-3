@@ -256,6 +256,21 @@ export default function App() {
     };
   }, []);
 
+  // Real-time synchronization for Student Subscription & Pro Access (Admin ↔ Student)
+  useEffect(() => {
+    const handleSubscriptionUpdated = (e: any) => {
+      const newState: SubscriptionState = e?.detail || loadSubscriptionState();
+      setSubscriptionState(newState);
+      if (newState.isPro) {
+        addToast("🎉 Pro Access Verified! Premium Socratic features are now active.", "success");
+      }
+    };
+    window.addEventListener("cherry_subscription_updated", handleSubscriptionUpdated);
+    return () => {
+      window.removeEventListener("cherry_subscription_updated", handleSubscriptionUpdated);
+    };
+  }, []);
+
   // Automatically trigger the PWA "Install App" popup on landing if not in standalone mode
   useEffect(() => {
     try {
@@ -724,10 +739,32 @@ export default function App() {
   }, [addToast, loadPastSessions]);
 
   const handleOnboardingSubmit = async (data: { name: string; grade: string; board: string; mediumOfLearning: string }) => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      throw new Error("No authenticated student session found.");
+    // Resolve active student session: auth.currentUser -> user state -> local_active_user -> auto-generated session
+    let effectiveUser: any = auth.currentUser || user;
+    if (!effectiveUser) {
+      try {
+        const stored = localStorage.getItem("local_active_user");
+        if (stored) {
+          effectiveUser = JSON.parse(stored);
+        }
+      } catch (_) {}
     }
+
+    if (!effectiveUser) {
+      const fallbackUser = {
+        uid: "student_" + Date.now().toString(36) + "_" + Math.random().toString(36).substring(2, 6),
+        displayName: data.name,
+        email: `${data.name.toLowerCase().replace(/\s+/g, "") || "student"}@cherryai.app`,
+        isAnonymous: false,
+      };
+      try {
+        localStorage.setItem("local_active_user", JSON.stringify(fallbackUser));
+      } catch (_) {}
+      effectiveUser = fallbackUser;
+      setUser(effectiveUser as any);
+    }
+
+    const activeUid = effectiveUser.uid || "local_student";
 
     try {
       const profileData = {
@@ -739,29 +776,34 @@ export default function App() {
       };
 
       setStudentDetails(profileData);
-      localStorage.setItem(`studentProfile_${currentUser.uid}`, JSON.stringify(profileData));
+      try {
+        localStorage.setItem(`studentProfile_${activeUid}`, JSON.stringify(profileData));
+        localStorage.setItem("cherry_student_profile", JSON.stringify(profileData));
+      } catch (_) {}
 
       setShowOnboarding(false);
       setCurrentScreen("syllabus"); 
       addToast(`Namaste, ${data.name}! Your student profile setup is complete! 🎓🎒`, "success");
 
-      // Write to Firestore in the background
-      const profileRef = doc(db, "studentProfiles", currentUser.uid);
-      setDoc(profileRef, {
-        userId: currentUser.uid,
-        name: data.name,
-        grade: data.grade,
-        board: data.board,
-        mediumOfLearning: data.mediumOfLearning,
-        subject: studentDetails.subject || "Mathematics",
-        updatedAt: serverTimestamp()
-      }).then(() => {
-        loadPastSessions(currentUser.uid).catch((err) => {
-          console.warn("Could not load past sessions:", err);
+      // Write to Firestore in the background if Firebase user is authenticated
+      if (auth.currentUser && !auth.currentUser.uid.startsWith("local_")) {
+        const profileRef = doc(db, "studentProfiles", auth.currentUser.uid);
+        setDoc(profileRef, {
+          userId: auth.currentUser.uid,
+          name: data.name,
+          grade: data.grade,
+          board: data.board,
+          mediumOfLearning: data.mediumOfLearning,
+          subject: studentDetails.subject || "Mathematics",
+          updatedAt: serverTimestamp()
+        }).then(() => {
+          loadPastSessions(auth.currentUser!.uid).catch((err) => {
+            console.warn("Could not load past sessions:", err);
+          });
+        }).catch((dbErr: any) => {
+          console.warn("[Onboarding] background Firestore sync issue:", dbErr);
         });
-      }).catch((dbErr: any) => {
-        console.warn("[Onboarding] background Firestore sync issue:", dbErr);
-      });
+      }
     } catch (offlineErr: any) {
       console.warn("[Onboarding] offline setup:", offlineErr);
       const offlineProfileData = {
@@ -772,11 +814,14 @@ export default function App() {
         subject: studentDetails.subject || "Mathematics"
       };
       setStudentDetails(offlineProfileData);
-      localStorage.setItem(`studentProfile_${currentUser.uid}`, JSON.stringify(offlineProfileData));
+      try {
+        localStorage.setItem(`studentProfile_${activeUid}`, JSON.stringify(offlineProfileData));
+        localStorage.setItem("cherry_student_profile", JSON.stringify(offlineProfileData));
+      } catch (_) {}
       setShowOnboarding(false);
       setCurrentScreen("syllabus");
       addToast(`Profile setup in offline/fallback mode! 🎒`, "info");
-      loadPastSessions(currentUser.uid).catch((err) => {
+      loadPastSessions(activeUid).catch((err) => {
         console.warn("Could not load past sessions:", err);
       });
     }
@@ -817,6 +862,17 @@ export default function App() {
         setIsAdmin(false);
         setAdminViewMode("student");
         addToast("Activated verified student session! 🎒✨", "success");
+      } else if (
+        error?.code === "auth/popup-closed-by-user" ||
+        error?.message?.includes("popup-closed-by-user") ||
+        error?.code === "auth/cancelled-popup-request" ||
+        error?.message?.includes("cancelled-popup-request")
+      ) {
+        console.info("Google sign-in popup was closed by user.");
+        addToast("Google sign-in was cancelled. Tap again when ready.", "info");
+      } else if (error?.code === "auth/popup-blocked" || error?.message?.includes("popup-blocked")) {
+        console.warn("Google sign-in popup was blocked by browser.");
+        addToast("Sign-in popup was blocked by your browser. Please allow popups.", "warning");
       } else {
         addToast(`Authentication failed: ${error.message}`, "error");
       }

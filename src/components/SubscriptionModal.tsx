@@ -102,11 +102,17 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
         merchantName: mer,
       }));
     };
+    const handleSubUpdated = (e: any) => {
+      const updated = e.detail || loadSubscriptionState();
+      setSubState(updated);
+    };
     window.addEventListener("cherry_plans_updated", handlePlansUpdated);
     window.addEventListener("cherry_upi_config_updated", handleUpiUpdated);
+    window.addEventListener("cherry_subscription_updated", handleSubUpdated);
     return () => {
       window.removeEventListener("cherry_plans_updated", handlePlansUpdated);
       window.removeEventListener("cherry_upi_config_updated", handleUpiUpdated);
+      window.removeEventListener("cherry_subscription_updated", handleSubUpdated);
     };
   }, []);
 

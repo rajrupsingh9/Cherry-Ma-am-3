@@ -179,13 +179,20 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
         merchantName: e.detail?.merchantName || DEFAULT_MERCHANT_NAME,
       }));
     };
+    const handleSubUpdated = (e: any) => {
+      const updated = e.detail || loadSubscriptionState();
+      setSubState(updated);
+      onSubscriptionUpdated?.(updated);
+    };
     window.addEventListener("cherry_plans_updated", handlePlansUpdated);
     window.addEventListener("cherry_upi_config_updated", handleUpiUpdated);
+    window.addEventListener("cherry_subscription_updated", handleSubUpdated);
     return () => {
       window.removeEventListener("cherry_plans_updated", handlePlansUpdated);
       window.removeEventListener("cherry_upi_config_updated", handleUpiUpdated);
+      window.removeEventListener("cherry_subscription_updated", handleSubUpdated);
     };
-  }, []);
+  }, [onSubscriptionUpdated]);
 
   const specialPlan =
     plans.find((p) => p.id === "semiannual_149") || plans[0] || SUBSCRIPTION_PLANS[0];
@@ -365,6 +372,16 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
         err?.message?.includes("unauthorized-domain") ||
         err?.message?.includes("auth/unauthorized-domain");
 
+      const isPopupClosed =
+        err?.code === "auth/popup-closed-by-user" ||
+        err?.message?.includes("popup-closed-by-user") ||
+        err?.code === "auth/cancelled-popup-request" ||
+        err?.message?.includes("cancelled-popup-request");
+
+      const isPopupBlocked =
+        err?.code === "auth/popup-blocked" ||
+        err?.message?.includes("popup-blocked");
+
       if (isDomainError) {
         console.warn(
           "Firebase Auth unauthorized domain on preview environment. Activating direct student authentication."
@@ -374,10 +391,23 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
           "info"
         );
         handleDirectStudentLogin("onlinework0876@gmail.com");
+      } else if (isPopupClosed) {
+        // User closed or dismissed the popup window - harmless cancellation
+        console.info("Google Sign-In popup was closed by user.");
+        onToast?.(
+          "Google sign-in was cancelled. Click again when ready, or continue with direct login.",
+          "info"
+        );
+      } else if (isPopupBlocked) {
+        console.warn("Google Sign-In popup was blocked by browser.");
+        onToast?.(
+          "Sign-in popup was blocked by your browser. Please allow popups or use direct login.",
+          "warning"
+        );
       } else {
         console.error("Google sign-in error:", err);
         onToast?.(
-          `Google Sign-In failed: ${err.message || "Popup was closed. Please try again."}`,
+          `Google Sign-In failed: ${err.message || "Please try again."}`,
           "error"
         );
       }

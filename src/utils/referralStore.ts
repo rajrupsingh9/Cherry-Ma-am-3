@@ -608,7 +608,7 @@ export function saveReferralState(state: ReferralAccountState, uid: string = "")
       } catch (_) {}
     }
     if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("cherry_referrals_updated"));
+      window.dispatchEvent(new CustomEvent("cherry_referrals_updated", { detail: { state, uid } }));
     }
   } catch (_) {}
 }

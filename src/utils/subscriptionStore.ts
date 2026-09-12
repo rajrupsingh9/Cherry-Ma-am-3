@@ -396,6 +396,7 @@ export function saveSubscriptionState(state: SubscriptionState): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    window.dispatchEvent(new CustomEvent("cherry_subscription_updated", { detail: state }));
   } catch (e) {
     console.warn("Failed to save subscription state:", e);
   }
@@ -631,29 +632,42 @@ export function approveStudentSubscription(params: {
   updatedList[index] = updatedRecord;
   saveStudentSubscriptions(updatedList);
 
-  // If this student matches current local active user, update local subscription state as well
-  try {
-    const localUserRaw = localStorage.getItem("local_active_user");
-    if (localUserRaw) {
-      const localUser = JSON.parse(localUserRaw);
-      if (
-        localUser.uid === targetRecord.id ||
-        (localUser.email && localUser.email === targetRecord.studentEmail) ||
-        localUser.displayName === targetRecord.studentName
-      ) {
-        const currentSub = loadSubscriptionState();
-        saveSubscriptionState({
-          ...currentSub,
-          isPro: true,
-          activePlanId: chosenPlan.id,
-          activePlanName: chosenPlan.name,
-          subscriptionStart: now.toISOString(),
-          subscriptionExpires: expires.toISOString(),
-        });
-        window.dispatchEvent(new CustomEvent("cherry_subscription_updated"));
+  // Helper to match active student session in current browser
+  const isMatchCurrentSession = (): boolean => {
+    try {
+      const localUserRaw = localStorage.getItem("local_active_user");
+      if (localUserRaw) {
+        const localUser = JSON.parse(localUserRaw);
+        if (
+          localUser.uid === targetRecord.id ||
+          (localUser.email && targetRecord.studentEmail && localUser.email.toLowerCase() === targetRecord.studentEmail.toLowerCase()) ||
+          (localUser.displayName && localUser.displayName.toLowerCase() === targetRecord.studentName.toLowerCase())
+        ) {
+          return true;
+        }
       }
-    }
-  } catch (_) {}
+      const profileRaw = localStorage.getItem("cherry_student_profile");
+      if (profileRaw) {
+        const profile = JSON.parse(profileRaw);
+        if (profile.name && profile.name.toLowerCase() === targetRecord.studentName.toLowerCase()) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  };
+
+  if (isMatchCurrentSession()) {
+    const currentSub = loadSubscriptionState();
+    saveSubscriptionState({
+      ...currentSub,
+      isPro: true,
+      activePlanId: chosenPlan.id,
+      activePlanName: chosenPlan.name,
+      subscriptionStart: now.toISOString(),
+      subscriptionExpires: expires.toISOString(),
+    });
+  }
 
   return updatedRecord;
 }
@@ -680,23 +694,33 @@ export function revokeStudentSubscription(params: {
 
   // If matches active session, sync local state
   try {
+    let matched = false;
     const localUserRaw = localStorage.getItem("local_active_user");
     if (localUserRaw) {
       const localUser = JSON.parse(localUserRaw);
       if (
         localUser.uid === targetRecord.id ||
-        (localUser.email && localUser.email === targetRecord.studentEmail) ||
-        localUser.displayName === targetRecord.studentName
+        (localUser.email && targetRecord.studentEmail && localUser.email.toLowerCase() === targetRecord.studentEmail.toLowerCase()) ||
+        (localUser.displayName && localUser.displayName.toLowerCase() === targetRecord.studentName.toLowerCase())
       ) {
-        const currentSub = loadSubscriptionState();
-        saveSubscriptionState({
-          ...currentSub,
-          isPro: false,
-          activePlanId: null,
-          activePlanName: null,
-        });
-        window.dispatchEvent(new CustomEvent("cherry_subscription_updated"));
+        matched = true;
       }
+    }
+    const profileRaw = localStorage.getItem("cherry_student_profile");
+    if (profileRaw) {
+      const profile = JSON.parse(profileRaw);
+      if (profile.name && profile.name.toLowerCase() === targetRecord.studentName.toLowerCase()) {
+        matched = true;
+      }
+    }
+    if (matched) {
+      const currentSub = loadSubscriptionState();
+      saveSubscriptionState({
+        ...currentSub,
+        isPro: false,
+        activePlanId: null,
+        activePlanName: null,
+      });
     }
   } catch (_) {}
 
@@ -727,6 +751,38 @@ export function extendStudentSubscription(params: {
   const updatedList = [...currentList];
   updatedList[index] = updated;
   saveStudentSubscriptions(updatedList);
+
+  // If matches active session, sync extended expiry date
+  try {
+    let matched = false;
+    const localUserRaw = localStorage.getItem("local_active_user");
+    if (localUserRaw) {
+      const localUser = JSON.parse(localUserRaw);
+      if (
+        localUser.uid === target.id ||
+        (localUser.email && target.studentEmail && localUser.email.toLowerCase() === target.studentEmail.toLowerCase()) ||
+        (localUser.displayName && localUser.displayName.toLowerCase() === target.studentName.toLowerCase())
+      ) {
+        matched = true;
+      }
+    }
+    const profileRaw = localStorage.getItem("cherry_student_profile");
+    if (profileRaw) {
+      const profile = JSON.parse(profileRaw);
+      if (profile.name && profile.name.toLowerCase() === target.studentName.toLowerCase()) {
+        matched = true;
+      }
+    }
+    if (matched) {
+      const currentSub = loadSubscriptionState();
+      saveSubscriptionState({
+        ...currentSub,
+        isPro: true,
+        subscriptionExpires: newExpires.toISOString(),
+      });
+    }
+  } catch (_) {}
+
   return updated;
 }
 

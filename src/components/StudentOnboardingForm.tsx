@@ -34,7 +34,7 @@ export function StudentOnboardingForm({ initialName, onSubmit }: StudentOnboardi
         mediumOfLearning,
       });
     } catch (err: any) {
-      console.error("[Onboarding] Submission failed:", err);
+      console.warn("[Onboarding] Submission failed:", err);
       setError(err?.message || "Something went wrong during profile submission.");
     } finally {
       setSubmitting(false);

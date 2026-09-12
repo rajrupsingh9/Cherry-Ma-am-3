@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Share2,
   Copy,
@@ -26,6 +26,10 @@ import {
   ReferralAccountState,
   loadReferralState,
   requestWithdrawal,
+  getReferralCommissionConfig,
+  getDynamicTierConfig,
+  ReferralCommissionConfig,
+  syncCommissionConfigFromCloud,
 } from "../utils/referralStore";
 
 interface ReferAndEarnHubProps {
@@ -44,12 +48,42 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
   const [refState, setRefState] = useState<ReferralAccountState>(() =>
     loadReferralState(studentName, userUid)
   );
+  const [commissionConfig, setCommissionConfig] = useState<ReferralCommissionConfig>(() =>
+    getReferralCommissionConfig()
+  );
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
-  const [withdrawAmount, setWithdrawAmount] = useState<string>("50");
+  const [withdrawAmount, setWithdrawAmount] = useState<string>(
+    String(commissionConfig.minWithdrawalLimit || 50)
+  );
   const [withdrawUpi, setWithdrawUpi] = useState<string>("");
   const [activeTab, setActiveTab] = useState<"plan" | "calculator" | "history" | "rules">("plan");
+
+  // Sync with dynamic commission config updates (local events + cloud sync on mount)
+  useEffect(() => {
+    // Cloud sync on initial load
+    syncCommissionConfigFromCloud().then((res) => {
+      if (res?.config) {
+        setCommissionConfig(res.config);
+        setWithdrawAmount(String(res.config.minWithdrawalLimit || 50));
+      }
+    });
+
+    const handleConfigUpdate = () => {
+      const latest = getReferralCommissionConfig();
+      setCommissionConfig(latest);
+      setWithdrawAmount(String(latest.minWithdrawalLimit || 50));
+    };
+    window.addEventListener("cherry_commission_config_updated", handleConfigUpdate);
+    return () => {
+      window.removeEventListener("cherry_commission_config_updated", handleConfigUpdate);
+    };
+  }, []);
+
+  const dynamicTiers = useMemo(() => {
+    return getDynamicTierConfig(commissionConfig);
+  }, [commissionConfig]);
 
   // Calculator state
   const [calcDirectInvites, setCalcDirectInvites] = useState<number>(5);
@@ -72,7 +106,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
   };
 
   const handleShareWhatsApp = () => {
-    const message = `🚀 *Namaste! Join Cherry AI 1-on-1 Classroom & Virtual Lab!*\n\nUse my invite code *${refState.referralCode}* to get instant access and ₹50 Welcome Reward!\n\n👉 Join here: ${referralLink}`;
+    const message = `🚀 *Namaste! Join Cherry AI 1-on-1 Classroom & Virtual Lab!*\n\nUse my invite code *${refState.referralCode}* to get instant access and ₹${commissionConfig.level1Reward} Welcome Reward!\n\n👉 Join here: ${referralLink}`;
     const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
     window.open(whatsappUrl, "_blank");
     if (onToast) onToast("Opening WhatsApp share! 📲", "info");
@@ -83,7 +117,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
       try {
         await navigator.share({
           title: "Cherry AI - 1-on-1 AI Classroom & Lab",
-          text: `Join Cherry AI with my referral code ${refState.referralCode} and earn ₹50 Welcome Reward!`,
+          text: `Join Cherry AI with my referral code ${refState.referralCode} and earn ₹${commissionConfig.level1Reward} Welcome Reward!`,
           url: referralLink,
         });
         if (onToast) onToast("Shared successfully! 🎉", "success");
@@ -96,8 +130,9 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
   const handleWithdrawSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const amt = parseFloat(withdrawAmount);
-    if (isNaN(amt) || amt <= 0) {
-      if (onToast) onToast("Please enter a valid withdrawal amount.", "error");
+    const minLimit = commissionConfig.minWithdrawalLimit || 50;
+    if (isNaN(amt) || amt < minLimit) {
+      if (onToast) onToast(`Minimum withdrawal amount is ₹${minLimit}.`, "error");
       return;
     }
     const res = requestWithdrawal(refState, amt, withdrawUpi, userUid, studentName);
@@ -110,22 +145,22 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
     }
   };
 
-  // Level stats calculation
+  // Level stats calculation dynamically linked to commissionConfig
   const level1Count = refState.tierCounts[1] || 0;
-  const level1Earned = level1Count * 50;
+  const level1Earned = level1Count * commissionConfig.level1Reward;
   const level5Count = refState.tierCounts[5] || 0;
-  const level5Earned = level5Count * 50;
+  const level5Earned = level5Count * commissionConfig.level5Reward;
   const totalTeamMembers = Object.values(refState.tierCounts).reduce(
     (a: number, b: number) => a + Number(b || 0),
     0
   );
 
-  // Calculator estimated income
-  const calcLevel1Earned = calcDirectInvites * 50;
+  // Calculator estimated income based on admin configuration
+  const calcLevel1Earned = calcDirectInvites * commissionConfig.level1Reward;
   const calcLevel5Members = Math.round(
     calcDirectInvites * Math.pow(calcDuplicationRate, 4)
   );
-  const calcLevel5Earned = calcLevel5Members * 50;
+  const calcLevel5Earned = calcLevel5Members * commissionConfig.level5Reward;
   const calcTotalPotential = calcLevel1Earned + calcLevel5Earned;
 
   return (
@@ -160,7 +195,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
         <div className="flex items-center gap-1.5 ml-auto">
           <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10.5px] font-mono font-black flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-            Direct ₹50 + 5th ₹50
+            Direct ₹{commissionConfig.level1Reward} + 5th ₹{commissionConfig.level5Reward}
           </span>
         </div>
       </div>
@@ -371,7 +406,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           <div className="bg-emerald-50/80 p-2 rounded-xl border border-emerald-100">
             <span className="text-xs block">3️⃣</span>
             <span className="text-[9px] font-black text-emerald-700 block leading-tight mt-0.5">
-              Get ₹50 + ₹50
+              Get ₹{commissionConfig.level1Reward} + ₹{commissionConfig.level5Reward}
             </span>
             <span className="text-[8px] text-emerald-600 block">L1 & L5 Payout</span>
           </div>
@@ -416,13 +451,13 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 5-Level Income Compensation Architecture
               </span>
               <span className="text-slate-600 text-[10.5px] leading-relaxed">
-                Direct referrals par <strong className="text-emerald-700">₹50</strong> aur 5th tier indirect network referrals par <strong className="text-purple-700">₹50</strong> har student par milte hain.
+                Direct referrals par <strong className="text-emerald-700">₹{commissionConfig.level1Reward}</strong> aur 5th tier indirect network referrals par <strong className="text-purple-700">₹{commissionConfig.level5Reward}</strong> har student par milte hain.
               </span>
             </div>
           </div>
 
           <div className="space-y-2">
-            {REFERRAL_5_LEVEL_CONFIG.map((tier) => {
+            {dynamicTiers.map((tier) => {
               const count = refState.tierCounts[tier.level] || 0;
               const earned = count * tier.incomePerMember;
               const isEarningLevel = tier.incomePerMember > 0;
@@ -751,10 +786,10 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           <div className="space-y-2 text-[11px]">
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <strong className="text-slate-900 block font-bold mb-0.5">
-                1. 1st Level (Direct Income) ₹50:
+                1. 1st Level (Direct Income) ₹{commissionConfig.level1Reward}:
               </strong>
               <p className="text-slate-600">
-                Aapke invite code se join hone wale har student par turant flat ₹50 wallet me credit hote hain.
+                Aapke invite code se join hone wale har student par turant flat ₹{commissionConfig.level1Reward} wallet me credit hote hain.
               </p>
             </div>
 
@@ -769,10 +804,10 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
 
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <strong className="text-slate-900 block font-bold mb-0.5">
-                3. 5th Level (Indirect Income) ₹50:
+                3. 5th Level (Indirect Income) ₹{commissionConfig.level5Reward}:
               </strong>
               <p className="text-slate-600">
-                Jab 4th Level ke students aage kisi ko invite karte hain, toh 5th Level par aapko seedhe ₹50 indirect income milti hai.
+                Jab 4th Level ke students aage kisi ko invite karte hain, toh 5th Level par aapko seedhe ₹{commissionConfig.level5Reward} indirect income milti hai.
               </p>
             </div>
 
@@ -781,7 +816,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 4. Instant UPI Withdrawal:
               </strong>
               <p className="text-slate-600">
-                Minimum ₹50 balance hone par kisi bhi UPI ID (Google Pay, PhonePe, Paytm, BHIM) par withdraw kar sakte hain.
+                Minimum ₹{commissionConfig.minWithdrawalLimit || 50} balance hone par kisi bhi UPI ID (Google Pay, PhonePe, Paytm, BHIM) par withdraw kar sakte hain.
               </p>
             </div>
           </div>
@@ -821,17 +856,17 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 <input
                   type="number"
                   required
-                  min="50"
+                  min={commissionConfig.minWithdrawalLimit || 50}
                   max={refState.walletBalance}
                   value={withdrawAmount}
                   onChange={(e) => setWithdrawAmount(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                  placeholder="Min ₹50"
+                  placeholder={`Min ₹${commissionConfig.minWithdrawalLimit || 50}`}
                 />
 
                 {/* Quick Amount Chips */}
                 <div className="flex gap-1.5 pt-1">
-                  {[50, 100, 200, refState.walletBalance].map((val, idx) => (
+                  {[commissionConfig.minWithdrawalLimit || 50, 100, 200, refState.walletBalance].map((val, idx) => (
                     <button
                       key={idx}
                       type="button"
@@ -866,7 +901,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
               <div className="flex gap-2 pt-1">
                 <button
                   type="submit"
-                  disabled={refState.walletBalance < 50}
+                  disabled={refState.walletBalance < (commissionConfig.minWithdrawalLimit || 50)}
                   className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-md cursor-pointer active:scale-95"
                 >
                   Transfer ₹{withdrawAmount || "0"}

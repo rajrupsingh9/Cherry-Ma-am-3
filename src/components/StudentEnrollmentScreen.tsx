@@ -51,6 +51,12 @@ import {
   getActiveApiKey,
 } from "../utils/geminiKeyStorage";
 import { triggerCelebrationConfetti } from "../utils/confetti";
+import {
+  getReferralCommissionConfig,
+  lookupReferralCode,
+  distributeAndCreditReferralCommission,
+  ReferralLookupResult,
+} from "../utils/referralStore";
 
 export type OnboardingStep =
   | "google_login"
@@ -196,6 +202,71 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
   const [apiKeyMessage, setApiKeyMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
 
   const t = getTranslations(mediumOfLearning);
+
+  // Referral / Invite Code State (Phase 4)
+  const [referralCodeInput, setReferralCodeInput] = useState<string>(() => {
+    try {
+      if (typeof window !== "undefined") {
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlRef = urlParams.get("ref");
+        if (urlRef && urlRef.trim()) return urlRef.trim().toUpperCase();
+        return localStorage.getItem("cherry_pending_ref_code") || "";
+      }
+    } catch (_) {}
+    return "";
+  });
+  const [appliedReferral, setAppliedReferral] = useState<ReferralLookupResult | null>(null);
+  const [referralFeedback, setReferralFeedback] = useState<{
+    status: "idle" | "valid" | "invalid";
+    message: string;
+  }>({ status: "idle", message: "" });
+  const [showReferralInput, setShowReferralInput] = useState<boolean>(Boolean(referralCodeInput));
+  const [commissionConfig, setCommissionConfig] = useState(() => getReferralCommissionConfig());
+
+  // Auto-validate preloaded referral code from URL / localStorage on load
+  useEffect(() => {
+    const raw = referralCodeInput.trim();
+    if (raw) {
+      setShowReferralInput(true);
+      const studentId = activeAuthUser?.uid || "student_enroll";
+      const studentName = name || activeAuthUser?.displayName || "Student";
+      const lookup = lookupReferralCode(raw, studentId, studentName);
+      if (lookup.valid) {
+        setAppliedReferral(lookup);
+        setReferralFeedback({ status: "valid", message: lookup.message });
+      } else {
+        setAppliedReferral(null);
+        setReferralFeedback({ status: "invalid", message: lookup.message });
+      }
+    }
+  }, []);
+
+  const handleApplyReferralCode = (codeToVerify?: string) => {
+    const targetCode = (codeToVerify || referralCodeInput).trim().toUpperCase();
+    if (!targetCode) {
+      setAppliedReferral(null);
+      setReferralFeedback({ status: "invalid", message: "Please enter an invite code." });
+      return;
+    }
+    const studentId = activeAuthUser?.uid || authedUser?.uid || "student_enroll";
+    const studentName = name.trim() || activeAuthUser?.displayName || "Student";
+    const lookup = lookupReferralCode(targetCode, studentId, studentName);
+    if (lookup.valid) {
+      setAppliedReferral(lookup);
+      setReferralFeedback({
+        status: "valid",
+        message: lookup.message,
+      });
+      onToast?.(lookup.message, "success");
+    } else {
+      setAppliedReferral(null);
+      setReferralFeedback({
+        status: "invalid",
+        message: lookup.message,
+      });
+      onToast?.(lookup.message, "warning");
+    }
+  };
 
   // Synchronize Google displayName when user signs in
   useEffect(() => {
@@ -346,6 +417,30 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
         );
       } catch (err) {
         console.warn("Firestore profile save warning:", err);
+      }
+    }
+
+    // Phase 4: Referral code commission attribution & distribution
+    const activeCode = appliedReferral?.referralCode || referralCodeInput.trim().toUpperCase();
+    if (activeCode) {
+      const studentId = targetUser?.uid || ("std_" + Math.random().toString(36).substring(2, 8));
+      try {
+        const attribution = await distributeAndCreditReferralCommission({
+          referralCode: activeCode,
+          newStudentId: studentId,
+          newStudentName: cleanName,
+          newStudentGrade: grade,
+          newStudentEmail: targetUser?.email || undefined,
+        });
+
+        if (attribution.success) {
+          triggerCelebrationConfetti();
+          onToast?.(attribution.message, "success");
+        } else if (attribution.isSelfReferral) {
+          onToast?.(attribution.message, "warning");
+        }
+      } catch (err: any) {
+        console.warn("[StudentEnrollmentScreen] Referral attribution error:", err);
       }
     }
 
@@ -818,6 +913,91 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                         ))}
                       </select>
                     </div>
+                  </div>
+
+                  {/* Phase 4: Referral / Invite Code Input Section */}
+                  <div className="bg-slate-50/80 border border-slate-200/80 rounded-2xl p-3 sm:p-3.5 space-y-2.5 transition-all">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold text-slate-800 flex items-center gap-1.5">
+                        <Gift className="w-3.5 h-3.5 text-[#796AEF]" />
+                        <span>Have an Invite / Referral Code?</span>
+                      </label>
+                      {!showReferralInput && (
+                        <button
+                          type="button"
+                          onClick={() => setShowReferralInput(true)}
+                          className="text-[11px] font-bold text-[#796AEF] hover:underline cursor-pointer"
+                        >
+                          + Add Code
+                        </button>
+                      )}
+                    </div>
+
+                    {showReferralInput && (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={referralCodeInput}
+                            onChange={(e) => {
+                              const val = e.target.value.toUpperCase();
+                              setReferralCodeInput(val);
+                              if (appliedReferral) setAppliedReferral(null);
+                              if (referralFeedback.status !== "idle") {
+                                setReferralFeedback({ status: "idle", message: "" });
+                              }
+                            }}
+                            placeholder="e.g. CHERRY-AARAV-7821"
+                            className="flex-1 bg-white border border-slate-200 focus:border-[#796AEF] rounded-xl px-3 py-2 text-xs font-mono font-bold tracking-wider text-slate-900 outline-none placeholder:text-slate-400 uppercase shadow-2xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleApplyReferralCode()}
+                            disabled={!referralCodeInput.trim()}
+                            className="bg-[#796AEF] hover:bg-[#6858e0] text-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-2xs cursor-pointer active:scale-95 disabled:opacity-50 transition-all shrink-0"
+                          >
+                            Apply
+                          </button>
+                        </div>
+
+                        {/* Status Feedback Pill */}
+                        {appliedReferral ? (
+                          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex items-start gap-2 text-emerald-800 animate-fadeIn">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                            <div className="text-[11px] leading-snug">
+                              <p className="font-bold text-emerald-900">
+                                Invite Verified: {appliedReferral.referrerName}
+                              </p>
+                              <p className="text-emerald-700">
+                                ₹{appliedReferral.level1Reward} Direct Referral credit linked to upline!
+                              </p>
+                            </div>
+                          </div>
+                        ) : referralFeedback.status === "invalid" ? (
+                          <div className="bg-rose-50 border border-rose-200 rounded-xl p-2 flex items-center gap-2 text-rose-800 text-[11px]">
+                            <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                            <span>{referralFeedback.message}</span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                            <span className="text-[10px] text-slate-400 font-medium">Quick Demo:</span>
+                            {["CHERRY-AARAV-7821", "CHERRY-PRIYA-3312"].map((demoCode) => (
+                              <button
+                                key={demoCode}
+                                type="button"
+                                onClick={() => {
+                                  setReferralCodeInput(demoCode);
+                                  handleApplyReferralCode(demoCode);
+                                }}
+                                className="text-[10px] bg-white border border-slate-200 text-slate-600 hover:border-[#796AEF] hover:text-[#796AEF] px-2 py-0.5 rounded-md font-mono transition-colors cursor-pointer"
+                              >
+                                {demoCode}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Save Profile Button */}

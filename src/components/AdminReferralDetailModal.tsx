@@ -29,7 +29,8 @@ import {
   WithdrawalRecord,
   loadReferralState,
   toggleStudentReferralStatus,
-  REFERRAL_5_LEVEL_CONFIG
+  REFERRAL_5_LEVEL_CONFIG,
+  getReferralCommissionConfig,
 } from "../utils/referralStore";
 import { AdminWalletAdjustmentModal } from "./AdminWalletAdjustmentModal";
 import { AdminFraudControlModal } from "./AdminFraudControlModal";
@@ -57,6 +58,7 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
 }) => {
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const commissionConfig = getReferralCommissionConfig();
   const [activeTab, setActiveTab] = useState<"network" | "activities" | "withdrawals">("network");
   const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
   const [showFraudModal, setShowFraudModal] = useState(false);
@@ -304,7 +306,7 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
                     <div className="text-xs font-bold text-slate-900 flex items-center gap-1">
                       <span>1st Level (Direct Income)</span>
                       <span className="px-1.5 py-0.2 bg-emerald-200 text-emerald-900 rounded-full text-[9px] font-black">
-                        ₹50 / member
+                        ₹{commissionConfig.level1Reward} / member
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-500">
@@ -317,7 +319,7 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
                     {summary.directMembers} Students
                   </div>
                   <div className="text-[10px] font-bold text-emerald-600">
-                    +₹{summary.directMembers * 50} Earned
+                    +₹{summary.directMembers * commissionConfig.level1Reward} Earned
                   </div>
                 </div>
               </div>
@@ -355,7 +357,7 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
                     <div className="text-xs font-bold text-slate-900 flex items-center gap-1">
                       <span>5th Level (Indirect Income)</span>
                       <span className="px-1.5 py-0.2 bg-indigo-200 text-indigo-900 rounded-full text-[9px] font-black">
-                        ₹50 / member
+                        ₹{commissionConfig.level5Reward} / member
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-500">
@@ -368,7 +370,7 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
                     {summary.indirectMembers} Students
                   </div>
                   <div className="text-[10px] font-bold text-indigo-600">
-                    +₹{summary.indirectMembers * 50} Earned
+                    +₹{summary.indirectMembers * commissionConfig.level5Reward} Earned
                   </div>
                 </div>
               </div>

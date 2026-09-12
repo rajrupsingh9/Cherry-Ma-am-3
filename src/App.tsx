@@ -277,6 +277,20 @@ export default function App() {
     }
   }, []);
 
+  // Phase 4: Capture referral invite code (?ref=CODE) from incoming share links
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && window.location.search) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const refParam = urlParams.get("ref");
+        if (refParam && refParam.trim()) {
+          const cleanRef = refParam.trim().toUpperCase();
+          localStorage.setItem("cherry_pending_ref_code", cleanRef);
+        }
+      }
+    } catch (_) {}
+  }, []);
+
   // Parse markdown content into distinct sequential slides or topics with metadata stripping
   const topics = useMemo(() => {
     if (!activeDocument?.markdown) return [];

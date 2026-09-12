@@ -86,6 +86,7 @@ import { FeeReceiptModal } from "./FeeReceiptModal";
 import { AdminReferralDetailModal } from "./AdminReferralDetailModal";
 import { AdminPayoutRequestsQueue } from "./AdminPayoutRequestsQueue";
 import { AdminPayoutApprovalModal } from "./AdminPayoutApprovalModal";
+import { AdminCommissionConfigCard } from "./AdminCommissionConfigCard";
 import {
   getAllStudentReferralSummaries,
   getReferralSystemMetrics,
@@ -95,6 +96,7 @@ import {
   approveWithdrawalRequest,
   rejectWithdrawalRequest,
   WithdrawalRecord,
+  getReferralCommissionConfig,
 } from "../utils/referralStore";
 import { db } from "../lib/firebase";
 import { collection, getDocs, query, limit } from "firebase/firestore";
@@ -275,7 +277,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onToast,
   studentDetails,
 }) => {
-  const [activeTab, setActiveTab] = useState<"overview" | "students" | "referrals" | "pricing" | "audit" | "analytics" | "access" | "specs">("students");
+  const [activeTab, setActiveTab] = useState<"overview" | "students" | "referrals" | "pricing" | "audit" | "analytics" | "access" | "specs">("overview");
   const [adminList, setAdminList] = useState<string[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -702,7 +704,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [referralUpdateCounter, setReferralUpdateCounter] = useState(0);
 
   // Phase 2: UPI Payout & Withdrawal Approval Engine States
-  const [referralSubTab, setReferralSubTab] = useState<"network" | "payouts">("network");
+  const [referralSubTab, setReferralSubTab] = useState<"network" | "payouts" | "settings">("network");
   const [payoutModalRecord, setPayoutModalRecord] = useState<WithdrawalRecord | null>(null);
   const [payoutModalMode, setPayoutModalMode] = useState<"approve" | "reject">("approve");
 
@@ -711,8 +713,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setReferralUpdateCounter((c) => c + 1);
     };
     window.addEventListener("cherry_referrals_updated", handleRefUpdate);
-    return () => window.removeEventListener("cherry_referrals_updated", handleRefUpdate);
+    window.addEventListener("cherry_commission_config_updated", handleRefUpdate);
+    return () => {
+      window.removeEventListener("cherry_referrals_updated", handleRefUpdate);
+      window.removeEventListener("cherry_commission_config_updated", handleRefUpdate);
+    };
   }, []);
+
+  const activeCommissionConfig = useMemo(() => {
+    return getReferralCommissionConfig();
+  }, [referralUpdateCounter]);
 
   const referralSummaries = useMemo(() => {
     return getAllStudentReferralSummaries(mergedStudents);
@@ -992,18 +1002,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* Quick "View as Student" Header Pill Button */}
-          <button
-            type="button"
-            onClick={() => onSwitchToStudentView()}
-            className="h-8 px-2.5 sm:px-3 bg-indigo-50 hover:bg-indigo-100 active:scale-95 text-[#796AEF] border border-indigo-200/80 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs whitespace-nowrap"
-            title="Switch to Student Classroom mode to test live audio & whiteboard"
-          >
-            <Eye className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Student View</span>
-            <span className="sm:hidden">Student</span>
-          </button>
-
           {/* Refresh Button */}
           <button
             type="button"
@@ -1060,6 +1058,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="px-3 sm:px-4 pt-3 shrink-0">
         <div className="flex items-center gap-1.5 p-1 bg-slate-200/80 rounded-xl overflow-x-auto no-scrollbar">
           <button
+            onClick={() => setActiveTab("overview")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer ${
+              activeTab === "overview"
+                ? "bg-[#796AEF] text-white shadow-xs"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Overview</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("students")}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === "students"
@@ -1095,18 +1105,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {referralMetrics.totalReferrers} Active
               </span>
             )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab("overview")}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer ${
-              activeTab === "overview"
-                ? "bg-[#796AEF] text-white shadow-xs"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Overview</span>
           </button>
 
           <button
@@ -1675,8 +1673,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             </div>
 
-            {/* Sub-Tabs: Scholars & Network Hierarchy vs. UPI Payout Requests Queue */}
-            <div className="flex items-center gap-1.5 p-1 bg-slate-200/80 rounded-2xl w-full sm:w-auto">
+            {/* Sub-Tabs: Scholars & Network Hierarchy vs. UPI Payout Requests Queue vs. Commission Settings */}
+            <div className="flex items-center gap-1.5 p-1 bg-slate-200/80 rounded-2xl w-full sm:w-auto flex-wrap">
               <button
                 type="button"
                 onClick={() => setReferralSubTab("network")}
@@ -1711,7 +1709,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </span>
                 )}
               </button>
+
+              <button
+                type="button"
+                onClick={() => setReferralSubTab("settings")}
+                className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  referralSubTab === "settings"
+                    ? "bg-[#796AEF] text-white shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>Commission Rates &amp; Policy</span>
+                <span className="px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-extrabold text-[9.5px] font-mono">
+                  ₹{activeCommissionConfig.level1Reward}+₹{activeCommissionConfig.level5Reward}
+                </span>
+              </button>
             </div>
+
+            {/* SUB-VIEW 0: COMMISSION RATES & PAYOUT POLICY CONFIGURATOR (PHASE 2) */}
+            {referralSubTab === "settings" && (
+              <div className="space-y-4">
+                <AdminCommissionConfigCard
+                  onToast={onToast}
+                  onConfigSaved={() => {
+                    setReferralUpdateCounter((c) => c + 1);
+                  }}
+                />
+
+                {/* 5-Level Compensation Plan Reference Banner */}
+                <div className="p-4 bg-gradient-to-r from-indigo-50/70 via-white to-emerald-50/70 border border-indigo-100 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-start gap-2.5">
+                    <Sparkles className="w-4 h-4 text-[#796AEF] shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-900 block">
+                        Live 5-Level Compensation Plan Dynamics:
+                      </span>
+                      <span className="text-slate-600 text-[11px] block mt-0.5">
+                        • <strong>Level 1 (Direct Referral):</strong> Instant ₹{activeCommissionConfig.level1Reward} cash credit when a friend joins.<br />
+                        • <strong>Levels 2, 3, 4 (Bridge Tiers):</strong> ₹0 commission; builds network depth and motivation.<br />
+                        • <strong>Level 5 (Team Milestone):</strong> Instant ₹{activeCommissionConfig.level5Reward} cash bonus when a 5th-tier friend joins.<br />
+                        • <strong>Minimum UPI Payout:</strong> ₹{activeCommissionConfig.minWithdrawalLimit || 50} threshold with direct VPA settlement.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* SUB-VIEW 1: UPI PAYOUT REQUESTS QUEUE (PHASE 2) */}
             {referralSubTab === "payouts" && (
@@ -1764,7 +1808,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   {referralMetrics.totalDirectMembers} <span className="text-xs text-slate-400 font-normal">L1</span> • {referralMetrics.totalIndirectMembers} <span className="text-xs text-slate-400 font-normal">L5</span>
                 </div>
                 <div className="text-[10px] text-emerald-700 font-medium">
-                  ₹{referralMetrics.totalDirectMembers * 50} (Direct) + ₹{referralMetrics.totalIndirectMembers * 50} (Team)
+                  ₹{referralMetrics.totalDirectMembers * activeCommissionConfig.level1Reward} (Direct) + ₹{referralMetrics.totalIndirectMembers * activeCommissionConfig.level5Reward} (Team)
                 </div>
               </div>
 
@@ -2012,7 +2056,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <div className="px-2 py-1 bg-emerald-50 rounded-xl border border-emerald-100">
                             <div className="text-[9px] font-bold text-emerald-700 uppercase">L1 Direct</div>
                             <div className="text-xs font-black text-emerald-900">{summary.directMembers}</div>
-                            <div className="text-[8px] text-emerald-600 font-semibold">+₹{summary.directMembers * 50}</div>
+                            <div className="text-[8px] text-emerald-600 font-semibold">+₹{summary.directMembers * activeCommissionConfig.level1Reward}</div>
                           </div>
 
                           <div className="px-2 py-1 bg-slate-50 rounded-xl border border-slate-100">
@@ -2024,7 +2068,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <div className="px-2 py-1 bg-indigo-50 rounded-xl border border-indigo-100">
                             <div className="text-[9px] font-bold text-[#796AEF] uppercase">L5 Team</div>
                             <div className="text-xs font-black text-indigo-900">{summary.indirectMembers}</div>
-                            <div className="text-[8px] text-indigo-600 font-semibold">+₹{summary.indirectMembers * 50}</div>
+                            <div className="text-[8px] text-indigo-600 font-semibold">+₹{summary.indirectMembers * activeCommissionConfig.level5Reward}</div>
                           </div>
                         </div>
 
@@ -2090,10 +2134,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         Socratic 5-Level Compensation Plan Mechanics:
                       </span>
                       <span className="text-slate-600 text-[11px] block mt-0.5">
-                        • <strong>Level 1 (Direct Referral):</strong> Instant ₹50 cash credit when a friend joins.<br />
+                        • <strong>Level 1 (Direct Referral):</strong> Instant ₹{activeCommissionConfig.level1Reward} cash credit when a friend joins.<br />
                         • <strong>Levels 2, 3, 4 (Bridge Tiers):</strong> ₹0 commission; builds network depth and motivation.<br />
-                        • <strong>Level 5 (Team Milestone):</strong> Instant ₹50 cash bonus when a 5th-tier friend joins.<br />
-                        • <strong>Minimum UPI Payout:</strong> ₹50 threshold with direct VPA settlement.
+                        • <strong>Level 5 (Team Milestone):</strong> Instant ₹{activeCommissionConfig.level5Reward} cash bonus when a 5th-tier friend joins.<br />
+                        • <strong>Minimum UPI Payout:</strong> ₹{activeCommissionConfig.minWithdrawalLimit || 50} threshold with direct VPA settlement.
                       </span>
                     </div>
                   </div>
@@ -2215,42 +2259,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   Verified
                 </span>
               </div>
-            </div>
-
-            {/* Quick Navigation Action Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-              <button
-                onClick={() => setActiveTab("students")}
-                className="p-3 bg-white hover:bg-slate-50 active:scale-98 rounded-xl border border-slate-200 shadow-xs text-left space-y-1 transition-all cursor-pointer"
-              >
-                <div className="w-7 h-7 rounded-lg bg-indigo-50 text-[#796AEF] flex items-center justify-center">
-                  <Users className="w-4 h-4" />
-                </div>
-                <h4 className="text-xs font-bold text-slate-900">Student CRM</h4>
-                <p className="text-[10px] text-slate-500 leading-tight">View student list & progress</p>
-              </button>
-
-              <button
-                onClick={() => setActiveTab("pricing")}
-                className="p-3 bg-white hover:bg-slate-50 active:scale-98 rounded-xl border border-slate-200 shadow-xs text-left space-y-1 transition-all cursor-pointer"
-              >
-                <div className="w-7 h-7 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
-                  <CreditCard className="w-4 h-4" />
-                </div>
-                <h4 className="text-xs font-bold text-slate-900">Pricing & Plans</h4>
-                <p className="text-[10px] text-slate-500 leading-tight">Set amounts & validity</p>
-              </button>
-
-              <button
-                onClick={() => setActiveTab("analytics")}
-                className="p-3 bg-white hover:bg-slate-50 active:scale-98 rounded-xl border border-slate-200 shadow-xs text-left space-y-1 transition-all cursor-pointer col-span-2 sm:col-span-1"
-              >
-                <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                  <BarChart3 className="w-4 h-4" />
-                </div>
-                <h4 className="text-xs font-bold text-slate-900">Learning Analytics</h4>
-                <p className="text-[10px] text-slate-500 leading-tight">Grade distribution & traps</p>
-              </button>
             </div>
           </div>
         )}

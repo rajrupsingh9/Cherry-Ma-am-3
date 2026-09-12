@@ -1,11 +1,153 @@
 /**
  * referralStore.ts - Refer & Earn 5-Level Plan Engine
- * 1st Level (Direct Income) = Rs. 50
- * 2nd Level = Rs. 0
- * 3rd Level = Rs. 0
- * 4th Level = Rs. 0
- * 5th Level (Indirect Income) = Rs. 50
+ * Dynamic Commission Configuration & Payout Engine for Cherry AI Classroom
+ * Level 1 (Direct Income) & Level 5 (Indirect Income) are dynamically configurable by Admin
  */
+
+import { db } from "../lib/firebase";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+
+export interface ReferralCommissionConfig {
+  level1Reward: number; // Direct Income (Default: Rs. 50)
+  level2Reward: number; // Bridge (Default: Rs. 0)
+  level3Reward: number; // Bridge (Default: Rs. 0)
+  level4Reward: number; // Bridge (Default: Rs. 0)
+  level5Reward: number; // Indirect Income (Default: Rs. 50)
+  minWithdrawalLimit: number; // Default: Rs. 50
+  promoTagline?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export const DEFAULT_REFERRAL_COMMISSION_CONFIG: ReferralCommissionConfig = {
+  level1Reward: 50,
+  level2Reward: 0,
+  level3Reward: 0,
+  level4Reward: 0,
+  level5Reward: 50,
+  minWithdrawalLimit: 50,
+  promoTagline: "Earn flat rewards on every friend and network tier invite!",
+  updatedAt: "System Default",
+  updatedBy: "Admin",
+};
+
+export const REFERRAL_COMMISSION_CONFIG_STORAGE_KEY = "cherry_referral_commission_config_v1";
+const CLOUD_CONFIG_DOC_PATH = "systemSettings/referralConfig";
+
+/**
+ * Loads current commission configuration (Admin custom or defaults)
+ */
+export function getReferralCommissionConfig(): ReferralCommissionConfig {
+  if (typeof window === "undefined") {
+    return DEFAULT_REFERRAL_COMMISSION_CONFIG;
+  }
+  try {
+    const raw = localStorage.getItem(REFERRAL_COMMISSION_CONFIG_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.level1Reward === "number" && typeof parsed.level5Reward === "number") {
+        return {
+          ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
+          ...parsed,
+        };
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to load local referral commission config:", e);
+  }
+  return DEFAULT_REFERRAL_COMMISSION_CONFIG;
+}
+
+/**
+ * Saves modified commission configuration and dispatches global event
+ */
+export function saveReferralCommissionConfig(config: ReferralCommissionConfig): void {
+  if (typeof window === "undefined") return;
+  try {
+    const normalized: ReferralCommissionConfig = {
+      ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
+      ...config,
+      updatedAt: new Date().toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    };
+    localStorage.setItem(REFERRAL_COMMISSION_CONFIG_STORAGE_KEY, JSON.stringify(normalized));
+    window.dispatchEvent(new CustomEvent("cherry_commission_config_updated", { detail: normalized }));
+  } catch (e) {
+    console.warn("Failed to save referral commission config:", e);
+  }
+}
+
+/**
+ * Synchronizes referral commission rates from Firestore cloud document
+ */
+export async function syncCommissionConfigFromCloud(): Promise<{
+  success: boolean;
+  config: ReferralCommissionConfig;
+  message: string;
+}> {
+  try {
+    const docRef = doc(db, "systemSettings", "referralConfig");
+    const snapshot = await getDoc(docRef);
+    if (snapshot.exists()) {
+      const cloudData = snapshot.data() as Partial<ReferralCommissionConfig>;
+      const merged: ReferralCommissionConfig = {
+        ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
+        ...cloudData,
+      };
+      saveReferralCommissionConfig(merged);
+      return {
+        success: true,
+        config: merged,
+        message: "Successfully synchronized commission rates from Firestore Cloud! ☁️",
+      };
+    } else {
+      // Document does not exist yet in cloud; upload local current
+      const current = getReferralCommissionConfig();
+      await setDoc(docRef, current, { merge: true });
+      return {
+        success: true,
+        config: current,
+        message: "Initialized Firestore cloud commission config with current settings.",
+      };
+    }
+  } catch (err: any) {
+    console.warn("[syncCommissionConfigFromCloud] Cloud fetch fallback:", err?.message);
+    return {
+      success: false,
+      config: getReferralCommissionConfig(),
+      message: `Offline/Cloud fallback: Using local commission settings (${err?.message || "Cloud unavailable"}).`,
+    };
+  }
+}
+
+/**
+ * Saves commission rates to Firestore cloud document
+ */
+export async function saveCommissionConfigToCloud(config: ReferralCommissionConfig): Promise<{
+  success: boolean;
+  message: string;
+}> {
+  try {
+    saveReferralCommissionConfig(config);
+    const docRef = doc(db, "systemSettings", "referralConfig");
+    await setDoc(docRef, config, { merge: true });
+    return {
+      success: true,
+      message: "Commission settings saved to Firestore Cloud successfully! ☁️",
+    };
+  } catch (err: any) {
+    console.error("[saveCommissionConfigToCloud] Error:", err);
+    return {
+      success: false,
+      message: `Failed to save to cloud (${err?.message || "Unknown error"}), saved to local storage.`,
+    };
+  }
+}
 
 export interface ReferralTierConfig {
   level: number;
@@ -22,7 +164,7 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
     label: "1st Level (Direct)",
     type: "direct",
     incomePerMember: 50,
-    description: "Aapke direct link / code se join hone wale har student par flat ₹50.",
+    description: "Aapke direct link / code se join hone wale har student par flat reward.",
     badgeColor: "from-emerald-500 to-teal-600",
   },
   {
@@ -54,10 +196,59 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
     label: "5th Level (Indirect)",
     type: "indirect",
     incomePerMember: 50,
-    description: "Level 4 team ke naye invites se milne wali Indirect Income flat ₹50.",
+    description: "Level 4 team ke naye invites se milne wali Indirect Income.",
     badgeColor: "from-indigo-600 to-purple-600",
   },
 ];
+
+/**
+ * Returns dynamic 5-tier config based on current admin commission configuration
+ */
+export function getDynamicTierConfig(overrideConfig?: ReferralCommissionConfig): ReferralTierConfig[] {
+  const cfg = overrideConfig || getReferralCommissionConfig();
+  return [
+    {
+      level: 1,
+      label: "1st Level (Direct)",
+      type: "direct",
+      incomePerMember: cfg.level1Reward,
+      description: `Aapke direct link / code se join hone wale har student par flat ₹${cfg.level1Reward}.`,
+      badgeColor: "from-emerald-500 to-teal-600",
+    },
+    {
+      level: 2,
+      label: "2nd Level",
+      type: "bridge",
+      incomePerMember: cfg.level2Reward,
+      description: cfg.level2Reward > 0 ? `Level 2 network member reward flat ₹${cfg.level2Reward}.` : "Bridge tier network progression (₹0 payout).",
+      badgeColor: "from-slate-400 to-slate-500",
+    },
+    {
+      level: 3,
+      label: "3rd Level",
+      type: "bridge",
+      incomePerMember: cfg.level3Reward,
+      description: cfg.level3Reward > 0 ? `Level 3 network member reward flat ₹${cfg.level3Reward}.` : "Bridge tier network progression (₹0 payout).",
+      badgeColor: "from-slate-400 to-slate-500",
+    },
+    {
+      level: 4,
+      label: "4th Level",
+      type: "bridge",
+      incomePerMember: cfg.level4Reward,
+      description: cfg.level4Reward > 0 ? `Level 4 network member reward flat ₹${cfg.level4Reward}.` : "Bridge tier network progression (₹0 payout).",
+      badgeColor: "from-slate-400 to-slate-500",
+    },
+    {
+      level: 5,
+      label: "5th Level (Indirect)",
+      type: "indirect",
+      incomePerMember: cfg.level5Reward,
+      description: `Level 4 team ke naye invites se milne wali Indirect Income flat ₹${cfg.level5Reward}.`,
+      badgeColor: "from-indigo-600 to-purple-600",
+    },
+  ];
+}
 
 export interface ReferralActivity {
   id: string;
@@ -87,7 +278,7 @@ export interface WithdrawalRecord {
 
 export interface FraudFlag {
   id: string;
-  type: "self_referral" | "duplicate_upi" | "rapid_claims" | "suspicious_ip" | "frozen_account";
+  type: "self_referral" | "duplicate_upi" | "rapid_claims" | "suspicious_ip" | "frozen_account" | "same_device" | "suspicious_volume" | "ip_collision";
   severity: "high" | "medium" | "low";
   reason: string;
   timestamp: string;
@@ -106,6 +297,7 @@ export interface ReferralAccountState {
   freezeReason?: string;
   fraudFlags?: FraudFlag[];
   joinedWithCode?: string;
+  joinedReferrerName?: string;
 }
 
 export interface StudentReferralSummary {
@@ -404,6 +596,17 @@ export function saveReferralState(state: ReferralAccountState, uid: string = "")
     if (uid) {
       localStorage.setItem(`cherry_refer_earn_${uid}`, JSON.stringify(state));
     }
+    if (state.referralCode) {
+      try {
+        const rawIndex = localStorage.getItem("cherry_referral_code_index");
+        const index = rawIndex ? JSON.parse(rawIndex) : {};
+        index[state.referralCode.toUpperCase().trim()] = {
+          id: uid || "current_user",
+          name: (state as any).studentName || "Student",
+        };
+        localStorage.setItem("cherry_referral_code_index", JSON.stringify(index));
+      } catch (_) {}
+    }
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("cherry_referrals_updated"));
     }
@@ -424,6 +627,8 @@ export function toggleStudentReferralStatus(studentId: string, status: "active" 
 export function getAllStudentReferralSummaries(
   studentsList: Array<{ id: string; name: string; email?: string; grade?: string; board?: string }>
 ): StudentReferralSummary[] {
+  const commissionCfg = getReferralCommissionConfig();
+
   return studentsList.map((std) => {
     const account = loadReferralState(std.name, std.id);
     const level1 = account.tierCounts[1] || 0;
@@ -434,8 +639,8 @@ export function getAllStudentReferralSummaries(
     const bridgeMembers = level2 + level3 + level4;
     const totalTeamMembers = level1 + bridgeMembers + level5;
 
-    const level1Earned = level1 * 50;
-    const level5Earned = level5 * 50;
+    const level1Earned = level1 * commissionCfg.level1Reward;
+    const level5Earned = level5 * commissionCfg.level5Reward;
     const calculatedEarned = Math.max(account.totalEarned, level1Earned + level5Earned);
 
     const pendingWithdrawals = account.withdrawals.filter(w => w.status === "processing" || w.status === "pending");
@@ -532,8 +737,10 @@ export function requestWithdrawal(
       message: `Account is temporarily FROZEN: ${currentState.freezeReason || "Administrative security lock"}. Payouts cannot be requested.`,
     };
   }
-  if (amount < 50) {
-    return { success: false, updatedState: currentState, message: "Minimum withdrawal amount is ₹50." };
+  const cfg = getReferralCommissionConfig();
+  const minLimit = cfg.minWithdrawalLimit || 50;
+  if (amount < minLimit) {
+    return { success: false, updatedState: currentState, message: `Minimum withdrawal amount is ₹${minLimit}.` };
   }
   if (amount > currentState.walletBalance) {
     return { success: false, updatedState: currentState, message: "Insufficient wallet balance." };
@@ -902,5 +1109,373 @@ export function detectSelfReferralOrFraud(params: {
   }
 
   return { isFraud: false };
+}
+
+export interface ReferralLookupResult {
+  valid: boolean;
+  referrerId?: string;
+  referrerName?: string;
+  referralCode?: string;
+  level1Reward: number;
+  level5Reward: number;
+  isSelf?: boolean;
+  isFrozen?: boolean;
+  message: string;
+}
+
+export const KNOWN_STUDENT_CODE_REGISTRY: Record<string, { id: string; name: string }> = {
+  "CHERRY-AARAV-7821": { id: "std_aarav_10", name: "Aarav Sharma" },
+  "CHERRY-DIYA-4923": { id: "std_diya_10", name: "Ananya Verma" },
+  "CHERRY-ROHAN-9104": { id: "std_rohan_10", name: "Rohan Gupta" },
+  "CHERRY-PRIYA-3312": { id: "std_priya_12", name: "Priya Patel" },
+  "CHERRY-KABIR-5521": { id: "std_kabir_11", name: "Kabir Mehta" },
+};
+
+/**
+ * Phase 4: Look up and validate an invite / referral code
+ */
+export function lookupReferralCode(
+  rawCode: string,
+  currentUserId?: string,
+  currentUserName?: string
+): ReferralLookupResult {
+  const config = getReferralCommissionConfig();
+  const level1Reward = config.level1Reward;
+  const level5Reward = config.level5Reward;
+
+  if (!rawCode || !rawCode.trim()) {
+    return {
+      valid: false,
+      level1Reward,
+      level5Reward,
+      message: "Please enter an invite code.",
+    };
+  }
+
+  const code = rawCode.trim().toUpperCase();
+
+  // 1. Check known student code registry
+  let matchedId = KNOWN_STUDENT_CODE_REGISTRY[code]?.id;
+  let matchedName = KNOWN_STUDENT_CODE_REGISTRY[code]?.name;
+
+  // 2. Check local dynamic referral code index
+  if (!matchedId && typeof window !== "undefined") {
+    try {
+      const rawIndex = localStorage.getItem("cherry_referral_code_index");
+      if (rawIndex) {
+        const index = JSON.parse(rawIndex);
+        if (index[code]) {
+          matchedId = index[code].id;
+          matchedName = index[code].name;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. Check demo template references
+  if (!matchedId) {
+    for (const [sId, sData] of Object.entries(DEMO_STUDENT_REFERRALS)) {
+      if (sData.referralCode && sData.referralCode.toUpperCase() === code) {
+        matchedId = sId;
+        matchedName =
+          KNOWN_STUDENT_CODE_REGISTRY[sData.referralCode]?.name ||
+          (sId.includes("aarav") ? "Aarav Sharma" : sId.includes("priya") ? "Priya Patel" : "Peer Scholar");
+        break;
+      }
+    }
+  }
+
+  // 4. Check user local storage accounts
+  if (!matchedId && typeof window !== "undefined") {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("cherry_refer_earn_")) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.referralCode && parsed.referralCode.toUpperCase() === code) {
+              matchedId = key.replace("cherry_refer_earn_", "");
+              matchedName = parsed.studentName || "Cherry Scholar";
+              break;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 5. Fallback for valid format CHERRY-XXXXX-XXXX to support custom peer codes
+  if (!matchedId && code.startsWith("CHERRY-")) {
+    const parts = code.split("-");
+    if (parts.length >= 2) {
+      const parsedFragment = parts[1];
+      matchedName = parsedFragment.charAt(0) + parsedFragment.slice(1).toLowerCase();
+      matchedId = `student_${code.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+    }
+  }
+
+  if (!matchedId) {
+    return {
+      valid: false,
+      level1Reward,
+      level5Reward,
+      message: `Invalid referral code "${code}". Please check and re-enter.`,
+    };
+  }
+
+  // Check self-referral
+  if (currentUserId && matchedId === currentUserId) {
+    return {
+      valid: false,
+      isSelf: true,
+      level1Reward,
+      level5Reward,
+      message: "Self-referral is not allowed. You cannot use your own referral code.",
+    };
+  }
+
+  if (
+    currentUserName &&
+    matchedName &&
+    currentUserName.trim().toLowerCase() === matchedName.trim().toLowerCase()
+  ) {
+    return {
+      valid: false,
+      isSelf: true,
+      level1Reward,
+      level5Reward,
+      message: "Self-referral detected. Name matches referrer profile.",
+    };
+  }
+
+  // Check frozen status
+  const referrerAccount = loadReferralState(matchedName, matchedId);
+  if (referrerAccount.isFrozen || referrerAccount.status === "paused") {
+    return {
+      valid: false,
+      isFrozen: true,
+      level1Reward,
+      level5Reward,
+      message: "Referrer account is currently under administrative review.",
+    };
+  }
+
+  return {
+    valid: true,
+    referrerId: matchedId,
+    referrerName: matchedName,
+    referralCode: code,
+    level1Reward,
+    level5Reward,
+    message: `Invite verified! Invited by ${matchedName} • ₹${level1Reward} Direct Reward Active! 🎉`,
+  };
+}
+
+export interface ReferralDistributionResult {
+  success: boolean;
+  message: string;
+  referrerId?: string;
+  referrerName?: string;
+  level1RewardCredited?: number;
+  level5RewardCredited?: number;
+  isSelfReferral?: boolean;
+}
+
+/**
+ * Phase 4: Distribute and credit real 5-level commission ledger upon student enrollment/onboarding
+ */
+export async function distributeAndCreditReferralCommission(params: {
+  referralCode: string;
+  newStudentId: string;
+  newStudentName: string;
+  newStudentGrade?: string;
+  newStudentEmail?: string;
+  deviceFingerprint?: string;
+}): Promise<ReferralDistributionResult> {
+  const {
+    referralCode,
+    newStudentId,
+    newStudentName,
+    newStudentGrade = "Class 10",
+    newStudentEmail,
+    deviceFingerprint,
+  } = params;
+
+  if (!referralCode || !referralCode.trim()) {
+    return { success: false, message: "No referral code provided." };
+  }
+
+  const lookup = lookupReferralCode(referralCode, newStudentId, newStudentName);
+  if (!lookup.valid || !lookup.referrerId || !lookup.referrerName) {
+    return {
+      success: false,
+      message: lookup.message,
+      isSelfReferral: lookup.isSelf,
+    };
+  }
+
+  // Check if student has already redeemed a referral code
+  const redemptionKey = `cherry_redeemed_ref_${newStudentId}`;
+  if (typeof window !== "undefined") {
+    const previousRedemption = localStorage.getItem(redemptionKey);
+    if (previousRedemption) {
+      return {
+        success: false,
+        message: "Referral welcome reward already redeemed for this student account.",
+      };
+    }
+  }
+
+  // Anti-fraud validation
+  const fraudCheck = detectSelfReferralOrFraud({
+    referralCode,
+    referrerStudentId: lookup.referrerId,
+    referrerStudentName: lookup.referrerName,
+    newStudentId,
+    newStudentName,
+    newStudentEmail,
+    deviceFingerprint,
+  });
+
+  if (fraudCheck.isFraud) {
+    addStudentFraudFlag(lookup.referrerId, lookup.referrerName, {
+      type: fraudCheck.flagType || "self_referral",
+      severity: "high",
+      reason: fraudCheck.reason || "Fraudulent referral attempt detected.",
+    });
+    return {
+      success: false,
+      message: fraudCheck.reason || "Referral rejected by security protocol.",
+      isSelfReferral: true,
+    };
+  }
+
+  const config = getReferralCommissionConfig();
+  const l1Reward = Number(config.level1Reward ?? 50);
+  const l5Reward = Number(config.level5Reward ?? 50);
+
+  // 1. Credit Level 1 Direct Income to Referrer
+  const referrerAccount = loadReferralState(lookup.referrerName, lookup.referrerId);
+  referrerAccount.tierCounts[1] = (referrerAccount.tierCounts[1] || 0) + 1;
+  referrerAccount.totalEarned = (referrerAccount.totalEarned || 0) + l1Reward;
+  referrerAccount.walletBalance = (referrerAccount.walletBalance || 0) + l1Reward;
+
+  const nowFormatted =
+    "Today, " +
+    new Date().toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  const directActivity: ReferralActivity = {
+    id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    name: `${newStudentName} (${newStudentGrade})`,
+    level: 1,
+    amount: l1Reward,
+    date: nowFormatted,
+    status: "credited",
+  };
+
+  referrerAccount.activities = [directActivity, ...(referrerAccount.activities || [])];
+  saveReferralState(referrerAccount, lookup.referrerId);
+
+  // Cloud sync to Firestore if db is active
+  try {
+    const refDoc = doc(db, "referralAccounts", lookup.referrerId);
+    await setDoc(
+      refDoc,
+      {
+        referrerId: lookup.referrerId,
+        referrerName: lookup.referrerName,
+        referralCode: lookup.referralCode,
+        totalEarned: referrerAccount.totalEarned,
+        walletBalance: referrerAccount.walletBalance,
+        tierCounts: referrerAccount.tierCounts,
+        lastReferralAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (err: any) {
+    console.warn("[distributeAndCreditReferralCommission] Firestore write warn:", err?.message);
+  }
+
+  // 2. Traverse Multi-Level Lineage (5-Level Compensation Tree)
+  let l5RewardCredited = 0;
+  if (typeof window !== "undefined") {
+    try {
+      const rawLineage = localStorage.getItem("cherry_referral_lineage");
+      const lineageMap: Record<string, string> = rawLineage ? JSON.parse(rawLineage) : {};
+      lineageMap[newStudentId] = lookup.referrerId;
+      localStorage.setItem("cherry_referral_lineage", JSON.stringify(lineageMap));
+
+      // Walk up the chain for tiers 2 through 5
+      let currentUpline = lookup.referrerId;
+      for (let lvl = 2; lvl <= 5; lvl++) {
+        const parentUpline = lineageMap[currentUpline];
+        if (!parentUpline) break;
+
+        const uplineAcc = loadReferralState("Upline", parentUpline);
+        uplineAcc.tierCounts[lvl] = (uplineAcc.tierCounts[lvl] || 0) + 1;
+
+        if (lvl === 5 && l5Reward > 0 && !uplineAcc.isFrozen && uplineAcc.status !== "paused") {
+          uplineAcc.totalEarned = (uplineAcc.totalEarned || 0) + l5Reward;
+          uplineAcc.walletBalance = (uplineAcc.walletBalance || 0) + l5Reward;
+          uplineAcc.activities = [
+            {
+              id: `act_${Date.now()}_l5_${Math.random().toString(36).substring(2, 6)}`,
+              name: `${newStudentName} (5th-Level Network Team)`,
+              level: 5,
+              amount: l5Reward,
+              date: nowFormatted,
+              status: "credited",
+            },
+            ...(uplineAcc.activities || []),
+          ];
+          l5RewardCredited = l5Reward;
+        }
+
+        saveReferralState(uplineAcc, parentUpline);
+        currentUpline = parentUpline;
+      }
+    } catch (err) {
+      console.warn("[Referral Lineage] Traversal warn:", err);
+    }
+  }
+
+  // 3. Mark as redeemed and link new student account
+  if (typeof window !== "undefined") {
+    localStorage.setItem(
+      redemptionKey,
+      JSON.stringify({
+        code: lookup.referralCode,
+        referrerId: lookup.referrerId,
+        referrerName: lookup.referrerName,
+        rewardCredited: l1Reward,
+        timestamp: Date.now(),
+      })
+    );
+    localStorage.removeItem("cherry_pending_ref_code");
+  }
+
+  const newStdAccount = loadReferralState(newStudentName, newStudentId);
+  newStdAccount.joinedWithCode = lookup.referralCode;
+  newStdAccount.joinedReferrerName = lookup.referrerName;
+  saveReferralState(newStdAccount, newStudentId);
+
+  // Global event update
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("cherry_referrals_updated"));
+  }
+
+  return {
+    success: true,
+    message: `🎉 Referral successfully attributed! ₹${l1Reward} credited to ${lookup.referrerName}'s wallet.${l5RewardCredited > 0 ? ` ₹${l5RewardCredited} credited to 5th level network upline.` : ""}`,
+    referrerId: lookup.referrerId,
+    referrerName: lookup.referrerName,
+    level1RewardCredited: l1Reward,
+    level5RewardCredited: l5RewardCredited,
+  };
 }
 

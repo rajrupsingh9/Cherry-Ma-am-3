@@ -939,44 +939,45 @@ export const SyllabusDeskModern: React.FC<SyllabusDeskModernProps> = ({
       <div className="space-y-3.5 flex-1 flex flex-col justify-start overflow-y-auto px-3.5 py-3 md:px-6 pr-0.5 pb-24 sm:pb-8">
         
         {/* PREMIUM VISUAL PASSPORT / WELCOME BANNER */}
-        <div className="bg-white text-slate-900 p-4 sm:p-5 rounded-2xl sm:rounded-3xl text-left relative overflow-hidden shadow-xs shrink-0 border border-slate-200/90">
+        <div className="bg-gradient-to-r from-indigo-700 via-[#796AEF] to-indigo-600 text-white p-4 sm:p-5 rounded-2xl sm:rounded-3xl text-left relative overflow-hidden shadow-md shrink-0 border border-indigo-500/40">
           {/* Subtle Ambient Glow */}
-          <div className="absolute -top-12 -right-12 w-40 h-40 bg-indigo-50/70 rounded-full blur-2xl pointer-events-none" />
+          <div className="absolute -top-12 -right-12 w-44 h-44 bg-white/15 rounded-full blur-2xl pointer-events-none" />
+          <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-indigo-900/30 rounded-full blur-xl pointer-events-none" />
           
           <div className="flex justify-between items-start relative z-10 gap-3">
             <div className="flex-1 min-w-0">
-              <span className="inline-flex items-center gap-1.5 text-[9px] bg-indigo-50 text-[#796AEF] border border-indigo-100/80 px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider font-sans">
-                <Sparkles className="w-3 h-3 text-[#796AEF]" /> Active Study Room
+              <span className="inline-flex items-center gap-1.5 text-[9.5px] bg-white/15 backdrop-blur-xs text-indigo-100 border border-white/25 px-2.5 py-0.5 rounded-full font-extrabold uppercase tracking-wider font-sans">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Active Study Room
               </span>
-              <h3 className="text-base sm:text-lg font-extrabold mt-1.5 tracking-tight leading-snug text-slate-900">
+              <h3 className="text-base sm:text-lg font-extrabold mt-1.5 tracking-tight leading-snug text-white">
                 Namaste, {studentDetails.name || "Student"}! 👋
               </h3>
-              <p className="text-xs text-slate-500 mt-1 leading-relaxed font-normal max-w-sm">
+              <p className="text-xs text-indigo-100/90 mt-1 leading-relaxed font-normal max-w-sm">
                 Welcome to your interactive study room! Choose a subject, upload homework notes or start a direct class below.
               </p>
             </div>
             
             {/* Animated Learning Streak Card */}
-            <div className="flex flex-col items-center bg-gradient-to-b from-amber-50 to-amber-100/30 border border-amber-200/80 rounded-2xl p-2 px-2.5 shrink-0 shadow-xs">
+            <div className="flex flex-col items-center bg-white text-slate-900 border border-white/60 rounded-2xl p-2 px-2.5 shrink-0 shadow-md">
               <Flame className="w-4.5 h-4.5 text-amber-500 animate-pulse" />
-              <span className="text-[10.5px] font-black mt-0.5 text-amber-950">1 Day</span>
-              <span className="text-[7px] font-sans text-amber-700 uppercase font-bold tracking-wider leading-none">Streak</span>
+              <span className="text-[10.5px] font-black mt-0.5 text-slate-900">1 Day</span>
+              <span className="text-[7px] font-sans text-amber-600 uppercase font-bold tracking-wider leading-none">Streak</span>
             </div>
           </div>
           
           {/* Quick learning passport details */}
-          <div className="mt-3.5 pt-3 border-t border-slate-100 flex items-center justify-between relative z-10 text-[9.5px] font-sans flex-wrap gap-2">
+          <div className="mt-3.5 pt-3 border-t border-white/20 flex items-center justify-between relative z-10 text-[9.5px] font-sans flex-wrap gap-2">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-200/70 flex items-center gap-1 font-bold text-slate-800">
+              <span className="bg-white text-[#796AEF] px-2.5 py-1 rounded-xl shadow-xs border border-white/80 flex items-center gap-1.5 font-bold">
                 <GraduationCap className="w-3.5 h-3.5 text-[#796AEF]" /> {studentDetails.grade}
               </span>
-              <span className="bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-200/70 flex items-center gap-1 font-bold text-slate-800">
+              <span className="bg-white text-[#796AEF] px-2.5 py-1 rounded-xl shadow-xs border border-white/80 flex items-center gap-1.5 font-bold">
                 <BookOpen className="w-3.5 h-3.5 text-[#796AEF]" /> {studentDetails.subject}
               </span>
             </div>
             
-            <span className="text-[#796AEF] font-bold uppercase tracking-widest text-[8.5px] flex items-center gap-1.5 bg-indigo-50/60 px-2 py-0.5 rounded-lg border border-indigo-100/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#796AEF] animate-pulse" /> System Live
+            <span className="text-indigo-100 font-extrabold uppercase tracking-wider text-[8.5px] flex items-center gap-1.5 bg-white/15 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-white/25">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> System Live
             </span>
           </div>
         </div>

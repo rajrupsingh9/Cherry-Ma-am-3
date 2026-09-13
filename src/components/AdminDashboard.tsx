@@ -16,6 +16,7 @@ import {
   Lock,
   BookOpen,
   Wifi,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Zap,
@@ -946,6 +947,361 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   }, [mergedStudents, searchQuery, gradeFilter, boardFilter, statusFilter]);
 
+  // Scroll helper for horizontal category rails in Student CRM
+  const scrollCategoryRow = (categoryId: string, direction: "left" | "right") => {
+    const el = document.getElementById(`crm-category-track-${categoryId}`);
+    if (el) {
+      const scrollAmount = 350;
+      el.scrollBy({
+        left: direction === "left" ? -scrollAmount : scrollAmount,
+        behavior: "smooth",
+      });
+    }
+  };
+
+  // Categorize students into horizontal tracks for CRM
+  const crmCategories = useMemo(() => {
+    const allCats = [
+      {
+        id: "pending_verification",
+        title: "Pending Verification (UTR)",
+        description: "Submitted UPI payment references awaiting verification",
+        icon: <Clock className="w-4 h-4 text-amber-600" />,
+        badgeClass: "bg-amber-100 text-amber-900 border-amber-300",
+        filterMatch: (s: StudentCRMRecord) => s.subscriptionStatus === "pending_verification",
+      },
+      {
+        id: "active",
+        title: "Pro Active Members",
+        description: "Students with active Pro subscriptions & full privileges",
+        icon: <Zap className="w-4 h-4 text-[#796AEF]" />,
+        badgeClass: "bg-indigo-100 text-indigo-900 border-indigo-200",
+        filterMatch: (s: StudentCRMRecord) => s.isPro || s.subscriptionStatus === "active",
+      },
+      {
+        id: "free",
+        title: "Free Tier Students",
+        description: "Freemium learners with trial access",
+        icon: <Users className="w-4 h-4 text-slate-600" />,
+        badgeClass: "bg-slate-100 text-slate-700 border-slate-200",
+        filterMatch: (s: StudentCRMRecord) =>
+          !s.isPro &&
+          s.subscriptionStatus !== "active" &&
+          s.subscriptionStatus !== "pending_verification" &&
+          s.subscriptionStatus !== "suspended",
+      },
+      {
+        id: "suspended",
+        title: "Suspended Accounts",
+        description: "Deactivated or paused student accounts",
+        icon: <XCircle className="w-4 h-4 text-rose-600" />,
+        badgeClass: "bg-rose-100 text-rose-900 border-rose-300",
+        filterMatch: (s: StudentCRMRecord) => s.subscriptionStatus === "suspended",
+      },
+    ];
+
+    if (statusFilter === "All") {
+      return allCats
+        .map((cat) => ({
+          ...cat,
+          students: filteredStudents.filter(cat.filterMatch),
+        }))
+        .filter((cat) => cat.students.length > 0);
+    }
+
+    const matched = allCats.filter((cat) => cat.id === statusFilter);
+    return matched.map((cat) => ({
+      ...cat,
+      students: filteredStudents,
+    }));
+  }, [filteredStudents, statusFilter]);
+
+  // Render individual student card in horizontal track
+  const renderStudentCard = (student: StudentCRMRecord) => {
+    const accuracyColor =
+      student.quizAccuracy >= 85
+        ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+        : student.quizAccuracy >= 70
+        ? "text-amber-700 bg-amber-50 border-amber-200"
+        : "text-rose-700 bg-rose-50 border-rose-200";
+
+    const isPending = student.subscriptionStatus === "pending_verification";
+    const isPro = student.isPro || student.subscriptionStatus === "active";
+    const isSuspended = student.subscriptionStatus === "suspended";
+
+    return (
+      <div
+        key={student.id}
+        id={`crm-student-card-${student.id}`}
+        className={`w-[310px] xs:w-[340px] sm:w-[370px] shrink-0 snap-start bg-white rounded-2xl p-3.5 border transition-all flex flex-col justify-between space-y-3 ${
+          isPending
+            ? "border-amber-300 shadow-xs ring-1 ring-amber-200/50"
+            : "border-slate-200/90 shadow-xs hover:border-indigo-300 hover:shadow-sm"
+        }`}
+      >
+        {/* Top row: Avatar, Info, Badges */}
+        <div className="flex items-start justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-50 to-indigo-100 border border-indigo-200 text-[#796AEF] font-black text-sm flex items-center justify-center shrink-0 shadow-xs">
+              {student.name.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <h4 className="text-xs sm:text-sm font-bold text-slate-900 truncate">
+                  {student.name}
+                </h4>
+                {student.isManualAdminProvisioned && (
+                  <span className="text-[9px] font-bold bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded-md shrink-0 border border-indigo-200 flex items-center gap-0.5">
+                    <Sparkles className="w-2.5 h-2.5" />
+                    Admin Direct
+                  </span>
+                )}
+                {student.isRealFirestoreUser ? (
+                  <span className="text-[9px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.2 rounded-md shrink-0">
+                    Live Sync
+                  </span>
+                ) : (
+                  <span className="text-[9px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded-md shrink-0">
+                    Sample Record
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 text-[10.5px] text-slate-500 font-medium flex-wrap mt-0.5">
+                <span className="font-semibold text-indigo-600">{student.grade}</span>
+                <span>•</span>
+                <span>{student.board}</span>
+                <span>•</span>
+                <span>{student.subject}</span>
+                {student.phone && (
+                  <>
+                    <span>•</span>
+                    <span className="text-slate-600 font-mono font-medium">📱 {student.phone}</span>
+                  </>
+                )}
+                {student.email && (
+                  <>
+                    <span>•</span>
+                    <span className="text-slate-400 truncate max-w-[120px]">{student.email}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Status Pills */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isPending && (
+              <span className="px-2 py-1 rounded-xl bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-black flex items-center gap-1">
+                <Clock className="w-3 h-3 text-amber-700" />
+                <span>UTR Pending</span>
+              </span>
+            )}
+
+            {isPro && !isPending && (
+              <span className="px-2 py-1 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-800 text-[10px] font-black flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                <span>Pro Active</span>
+              </span>
+            )}
+
+            {isSuspended && (
+              <span className="px-2 py-1 rounded-xl bg-rose-100 border border-rose-300 text-rose-800 text-[10px] font-bold flex items-center gap-1">
+                <XCircle className="w-3 h-3 text-rose-600" />
+                <span>Suspended</span>
+              </span>
+            )}
+
+            {!isPro && !isPending && !isSuspended && (
+              <span className="px-2 py-1 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-bold">
+                Free Tier
+              </span>
+            )}
+
+            {/* Quiz Accuracy pill */}
+            <div
+              className={`px-2 py-1 rounded-xl border text-[10.5px] font-extrabold flex items-center gap-1 ${accuracyColor}`}
+              title="Average Socratic Quiz Accuracy"
+            >
+              <Award className="w-3 h-3" />
+              <span>{student.quizAccuracy}%</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Phase 3: Pending UTR Approval Action Box */}
+        {isPending && (
+          <div className="bg-gradient-to-r from-amber-50 to-amber-100/70 rounded-xl p-2.5 border border-amber-200 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+                  Submitted UTR:
+                </span>
+                <span className="font-mono font-black text-amber-950 bg-white px-2 py-0.5 rounded-md border border-amber-300 text-[11px]">
+                  {student.utrNumber || "Not Provided"}
+                </span>
+                {student.utrNumber && (
+                  <button
+                    onClick={() => handleCopyUtr(student.utrNumber!)}
+                    className="p-1 hover:bg-amber-200 text-amber-800 rounded transition-colors cursor-pointer"
+                    title="Copy UTR Reference"
+                  >
+                    {copiedUtrId === student.utrNumber ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-700" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                )}
+              </div>
+              <div className="text-[11px] font-bold text-amber-900">
+                Plan: {student.subscriptionPlan || "Launch Special"} • ₹{student.paymentAmount || 149}
+              </div>
+            </div>
+
+            {student.notes && (
+              <p className="text-[10.5px] text-amber-800 italic">
+                "{student.notes}" {student.submittedAt && `• ${student.submittedAt}`}
+              </p>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-amber-200/70">
+              <button
+                onClick={() => {
+                  setManagingSubStudent(student);
+                  setSelectedPlanForApproval(student.planId || plans[0]?.id || "semiannual_149");
+                  setApprovalNotesInput(`Approved UTR: ${student.utrNumber || "Verified"}`);
+                }}
+                className="text-[11px] font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer"
+              >
+                More Options / Custom Plan
+              </button>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => handleQuickApprove(student, student.planId || plans[0]?.id)}
+                  disabled={isProcessingAction}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center gap-1 cursor-pointer"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Approve Pro Access</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Phase 3: Pro Plan Details Strip */}
+        {isPro && !isPending && (
+          <div className="flex items-center justify-between text-[11px] bg-indigo-50/70 rounded-xl px-2.5 py-1.5 border border-indigo-100">
+            <div className="flex items-center gap-1.5 text-indigo-950 font-semibold truncate">
+              <Zap className="w-3.5 h-3.5 text-[#796AEF] shrink-0" />
+              <span>Plan: <strong className="text-[#796AEF]">{student.subscriptionPlan || "Pro Tier"}</strong></span>
+              {student.subscriptionExpires && (
+                <span className="text-slate-500 font-normal truncate">• Expires: {student.subscriptionExpires}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => {
+                  const matchedSub = studentSubscriptions.find(
+                    (s) => s.studentId === student.id || s.id === student.id
+                  );
+                  setReceiptModalSub(matchedSub || {
+                    id: student.id,
+                    studentName: student.name,
+                    planId: "semiannual_149",
+                    planName: student.subscriptionPlan || "6 Months Special Pass",
+                    amountINR: student.paymentAmount || 149,
+                    status: "active",
+                    isPro: true,
+                    utrNumber: student.utrNumber,
+                    submittedAt: student.submittedAt || new Date().toISOString(),
+                    activatedAt: student.submittedAt || new Date().toISOString(),
+                    expiresAt: student.subscriptionExpires,
+                    approvedBy: student.approvedBy || "Admin",
+                  });
+                }}
+                className="px-2 py-0.5 bg-white hover:bg-indigo-100 border border-indigo-200 text-indigo-700 font-bold text-[10px] rounded flex items-center gap-1 cursor-pointer"
+                title="Generate Official Digital Fee Receipt"
+              >
+                <Receipt className="w-2.5 h-2.5" />
+                <span>Receipt</span>
+              </button>
+              <button
+                onClick={() => handleExtend(student, 1)}
+                disabled={isProcessingAction}
+                className="px-2 py-0.5 bg-white hover:bg-indigo-100 border border-indigo-200 text-[#796AEF] font-bold text-[10px] rounded cursor-pointer"
+                title="Quick extend +1 month"
+              >
+                +1 Mo
+              </button>
+              <button
+                onClick={() => setManagingSubStudent(student)}
+                className="px-2 py-0.5 bg-white hover:bg-indigo-100 border border-indigo-200 text-slate-700 font-bold text-[10px] rounded cursor-pointer"
+              >
+                Manage
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Middle row: Weak / Strong topics preview */}
+        <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100 space-y-1.5 text-[10.5px]">
+          <div className="flex items-center gap-1.5 text-slate-600">
+            <span className="font-bold text-slate-700 shrink-0">Blindspots:</span>
+            <span className="text-rose-600 font-medium truncate">
+              {student.weakTopics.join(", ") || "None recorded"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-slate-500 text-[10px] pt-1 border-t border-slate-200/60">
+            <span>{student.totalSessions} Sessions Attended</span>
+            <span>{student.totalQuizzes} Quizzes Taken</span>
+            <span>Updated {student.updatedAt}</span>
+          </div>
+        </div>
+
+        {/* Bottom Action buttons */}
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <button
+            onClick={() => setManagingSubStudent(student)}
+            className="px-2.5 py-1.5 bg-slate-100 hover:bg-indigo-50 hover:text-[#796AEF] text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+            title="Manage student subscription, approve UTR, or extend validity"
+          >
+            <CreditCard className="w-3.5 h-3.5 text-[#796AEF]" />
+            <span>Subscription</span>
+          </button>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => {
+                onSwitchToStudentView({
+                  name: student.name,
+                  grade: student.grade,
+                  subject: student.subject,
+                  board: student.board,
+                  mediumOfLearning: student.mediumOfLearning,
+                });
+              }}
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+              title="Switch to student preview with this student's grade & subject"
+            >
+              <Eye className="w-3.5 h-3.5 text-[#796AEF]" />
+              <span>Preview</span>
+            </button>
+
+            <button
+              onClick={() => setSelectedStudentForModal(student)}
+              className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 active:scale-95 text-[#796AEF] border border-indigo-200 text-xs font-bold rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Report Card</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Aggregate Analytics Calculations
   const analyticsSummary = useMemo(() => {
     const total = students.length;
@@ -1329,313 +1685,92 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </span>
             </div>
 
-            {/* Students List Cards */}
-            <div className="space-y-2.5">
-              {filteredStudents.length === 0 ? (
-                <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-2 shadow-xs">
-                  <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
-                    <Search className="w-5 h-5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-700">No students match your filter</h4>
-                  <p className="text-[11px] text-slate-500">Try changing or clearing your search term, grade, or status filter.</p>
-                  <button
-                    onClick={() => {
-                      setSearchQuery("");
-                      setGradeFilter("All");
-                      setBoardFilter("All");
-                      setStatusFilter("All");
-                    }}
-                    className="mt-2 px-3 py-1 bg-indigo-50 text-[#796AEF] rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors cursor-pointer"
-                  >
-                    Reset Filters
-                  </button>
+            {/* Students CRM Categories (Horizontally Scrollable per Category) */}
+            {filteredStudents.length === 0 ? (
+              <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-2 shadow-xs">
+                <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                  <Search className="w-5 h-5" />
                 </div>
-              ) : (
-                filteredStudents.map((student) => {
-                  const accuracyColor =
-                    student.quizAccuracy >= 85
-                      ? "text-emerald-700 bg-emerald-50 border-emerald-200"
-                      : student.quizAccuracy >= 70
-                      ? "text-amber-700 bg-amber-50 border-amber-200"
-                      : "text-rose-700 bg-rose-50 border-rose-200";
-
-                  const isPending = student.subscriptionStatus === "pending_verification";
-                  const isPro = student.isPro || student.subscriptionStatus === "active";
-                  const isSuspended = student.subscriptionStatus === "suspended";
-
-                  return (
-                    <div
-                      key={student.id}
-                      className={`bg-white rounded-2xl p-3.5 border transition-all space-y-3 ${
-                        isPending
-                          ? "border-amber-300 shadow-xs ring-1 ring-amber-200/50"
-                          : "border-slate-200/90 shadow-xs hover:border-indigo-300 hover:shadow-sm"
-                      }`}
-                    >
-                      {/* Top row: Avatar, Info, Badges */}
-                      <div className="flex items-start justify-between gap-2.5">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-50 to-indigo-100 border border-indigo-200 text-[#796AEF] font-black text-sm flex items-center justify-center shrink-0 shadow-xs">
-                            {student.name.charAt(0).toUpperCase()}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <h4 className="text-xs sm:text-sm font-bold text-slate-900 truncate">
-                                {student.name}
-                              </h4>
-                              {student.isManualAdminProvisioned && (
-                                <span className="text-[9px] font-bold bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded-md shrink-0 border border-indigo-200 flex items-center gap-0.5">
-                                  <Sparkles className="w-2.5 h-2.5" />
-                                  Admin Direct
-                                </span>
-                              )}
-                              {student.isRealFirestoreUser ? (
-                                <span className="text-[9px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.2 rounded-md shrink-0">
-                                  Live Sync
-                                </span>
-                              ) : (
-                                <span className="text-[9px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded-md shrink-0">
-                                  Sample Record
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1.5 text-[10.5px] text-slate-500 font-medium flex-wrap mt-0.5">
-                              <span className="font-semibold text-indigo-600">{student.grade}</span>
-                              <span>•</span>
-                              <span>{student.board}</span>
-                              <span>•</span>
-                              <span>{student.subject}</span>
-                              {student.phone && (
-                                <>
-                                  <span>•</span>
-                                  <span className="text-slate-600 font-mono font-medium">📱 {student.phone}</span>
-                                </>
-                              )}
-                              {student.email && (
-                                <>
-                                  <span>•</span>
-                                  <span className="text-slate-400 truncate max-w-[120px]">{student.email}</span>
-                                </>
-                              )}
-                            </div>
-                          </div>
+                <h4 className="text-xs font-bold text-slate-700">No students match your filter</h4>
+                <p className="text-[11px] text-slate-500">Try changing or clearing your search term, grade, or status filter.</p>
+                <button
+                  onClick={() => {
+                    setSearchQuery("");
+                    setGradeFilter("All");
+                    setBoardFilter("All");
+                    setStatusFilter("All");
+                  }}
+                  className="mt-2 px-3 py-1 bg-indigo-50 text-[#796AEF] rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors cursor-pointer"
+                >
+                  Reset Filters
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {crmCategories.map((category) => (
+                  <div
+                    key={category.id}
+                    id={`crm-category-section-${category.id}`}
+                    className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/90 shadow-2xs space-y-3"
+                  >
+                    {/* Category Header with Title, Count & Left/Right Scroll Controls */}
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-xl bg-slate-100 border border-slate-200/60 flex items-center justify-center shrink-0 shadow-2xs">
+                          {category.icon}
                         </div>
-
-                        {/* Status Pills */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {isPending && (
-                            <span className="px-2 py-1 rounded-xl bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-black flex items-center gap-1">
-                              <Clock className="w-3 h-3 text-amber-700" />
-                              <span>UTR Pending</span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight truncate">
+                              {category.title}
+                            </h3>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-black border shrink-0 ${category.badgeClass}`}>
+                              {category.students.length} Student{category.students.length > 1 ? "s" : ""}
                             </span>
-                          )}
-
-                          {isPro && !isPending && (
-                            <span className="px-2 py-1 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-800 text-[10px] font-black flex items-center gap-1">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              <span>Pro Active</span>
-                            </span>
-                          )}
-
-                          {isSuspended && (
-                            <span className="px-2 py-1 rounded-xl bg-rose-100 border border-rose-300 text-rose-800 text-[10px] font-bold flex items-center gap-1">
-                              <XCircle className="w-3 h-3 text-rose-600" />
-                              <span>Suspended</span>
-                            </span>
-                          )}
-
-                          {!isPro && !isPending && !isSuspended && (
-                            <span className="px-2 py-1 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-bold">
-                              Free Tier
-                            </span>
-                          )}
-
-                          {/* Quiz Accuracy pill */}
-                          <div
-                            className={`px-2 py-1 rounded-xl border text-[10.5px] font-extrabold flex items-center gap-1 ${accuracyColor}`}
-                            title="Average Socratic Quiz Accuracy"
-                          >
-                            <Award className="w-3 h-3" />
-                            <span>{student.quizAccuracy}%</span>
                           </div>
+                          <p className="text-[10.5px] text-slate-500 truncate hidden sm:block">
+                            {category.description}
+                          </p>
                         </div>
                       </div>
 
-                      {/* Phase 3: Pending UTR Approval Action Box */}
-                      {isPending && (
-                        <div className="bg-gradient-to-r from-amber-50 to-amber-100/70 rounded-xl p-2.5 border border-amber-200 space-y-2">
-                          <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
-                                Submitted UTR:
-                              </span>
-                              <span className="font-mono font-black text-amber-950 bg-white px-2 py-0.5 rounded-md border border-amber-300 text-[11px]">
-                                {student.utrNumber || "Not Provided"}
-                              </span>
-                              {student.utrNumber && (
-                                <button
-                                  onClick={() => handleCopyUtr(student.utrNumber!)}
-                                  className="p-1 hover:bg-amber-200 text-amber-800 rounded transition-colors cursor-pointer"
-                                  title="Copy UTR Reference"
-                                >
-                                  {copiedUtrId === student.utrNumber ? (
-                                    <Check className="w-3.5 h-3.5 text-emerald-700" />
-                                  ) : (
-                                    <Copy className="w-3.5 h-3.5" />
-                                  )}
-                                </button>
-                              )}
-                            </div>
-                            <div className="text-[11px] font-bold text-amber-900">
-                              Plan: {student.subscriptionPlan || "Launch Special"} • ₹{student.paymentAmount || 149}
-                            </div>
-                          </div>
-
-                          {student.notes && (
-                            <p className="text-[10.5px] text-amber-800 italic">
-                              "{student.notes}" {student.submittedAt && `• ${student.submittedAt}`}
-                            </p>
-                          )}
-
-                          <div className="flex items-center justify-between gap-2 pt-1 border-t border-amber-200/70">
-                            <button
-                              onClick={() => {
-                                setManagingSubStudent(student);
-                                setSelectedPlanForApproval(student.planId || plans[0]?.id || "semiannual_149");
-                                setApprovalNotesInput(`Approved UTR: ${student.utrNumber || "Verified"}`);
-                              }}
-                              className="text-[11px] font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer"
-                            >
-                              More Options / Custom Plan
-                            </button>
-
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                onClick={() => handleQuickApprove(student, student.planId || plans[0]?.id)}
-                                disabled={isProcessingAction}
-                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center gap-1 cursor-pointer"
-                              >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>Approve Pro Access</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Phase 3: Pro Plan Details Strip */}
-                      {isPro && !isPending && (
-                        <div className="flex items-center justify-between text-[11px] bg-indigo-50/70 rounded-xl px-2.5 py-1.5 border border-indigo-100">
-                          <div className="flex items-center gap-1.5 text-indigo-950 font-semibold truncate">
-                            <Zap className="w-3.5 h-3.5 text-[#796AEF] shrink-0" />
-                            <span>Plan: <strong className="text-[#796AEF]">{student.subscriptionPlan || "Pro Tier"}</strong></span>
-                            {student.subscriptionExpires && (
-                              <span className="text-slate-500 font-normal truncate">• Expires: {student.subscriptionExpires}</span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              onClick={() => {
-                                const matchedSub = studentSubscriptions.find(
-                                  (s) => s.studentId === student.id || s.id === student.id
-                                );
-                                setReceiptModalSub(matchedSub || {
-                                  id: student.id,
-                                  studentName: student.name,
-                                  planId: "semiannual_149",
-                                  planName: student.subscriptionPlan || "6 Months Special Pass",
-                                  amountINR: student.paymentAmount || 149,
-                                  status: "active",
-                                  isPro: true,
-                                  utrNumber: student.utrNumber,
-                                  submittedAt: student.submittedAt || new Date().toISOString(),
-                                  activatedAt: student.submittedAt || new Date().toISOString(),
-                                  expiresAt: student.subscriptionExpires,
-                                  approvedBy: student.approvedBy || "Admin",
-                                });
-                              }}
-                              className="px-2 py-0.5 bg-white hover:bg-indigo-100 border border-indigo-200 text-indigo-700 font-bold text-[10px] rounded flex items-center gap-1 cursor-pointer"
-                              title="Generate Official Digital Fee Receipt"
-                            >
-                              <Receipt className="w-2.5 h-2.5" />
-                              <span>Receipt</span>
-                            </button>
-                            <button
-                              onClick={() => handleExtend(student, 1)}
-                              disabled={isProcessingAction}
-                              className="px-2 py-0.5 bg-white hover:bg-indigo-100 border border-indigo-200 text-[#796AEF] font-bold text-[10px] rounded cursor-pointer"
-                              title="Quick extend +1 month"
-                            >
-                              +1 Mo
-                            </button>
-                            <button
-                              onClick={() => setManagingSubStudent(student)}
-                              className="px-2 py-0.5 bg-white hover:bg-indigo-100 border border-indigo-200 text-slate-700 font-bold text-[10px] rounded cursor-pointer"
-                            >
-                              Manage
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Middle row: Weak / Strong topics preview */}
-                      <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100 space-y-1.5 text-[10.5px]">
-                        <div className="flex items-center gap-1.5 text-slate-600">
-                          <span className="font-bold text-slate-700 shrink-0">Blindspots:</span>
-                          <span className="text-rose-600 font-medium truncate">
-                            {student.weakTopics.join(", ") || "None recorded"}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between text-slate-500 text-[10px] pt-1 border-t border-slate-200/60">
-                          <span>{student.totalSessions} Sessions Attended</span>
-                          <span>{student.totalQuizzes} Quizzes Taken</span>
-                          <span>Updated {student.updatedAt}</span>
-                        </div>
-                      </div>
-
-                      {/* Bottom Action buttons */}
-                      <div className="flex items-center justify-between gap-2 pt-1">
+                      {/* Horizontal Scroll Navigation Controls */}
+                      <div className="flex items-center gap-1.5 ml-auto">
+                        <span className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase hidden xs:inline-block mr-0.5">
+                          Scroll ➔
+                        </span>
                         <button
-                          onClick={() => setManagingSubStudent(student)}
-                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-indigo-50 hover:text-[#796AEF] text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                          title="Manage student subscription, approve UTR, or extend validity"
+                          id={`crm-scroll-left-${category.id}`}
+                          type="button"
+                          onClick={() => scrollCategoryRow(category.id, "left")}
+                          className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-600 flex items-center justify-center transition-all cursor-pointer"
+                          title="Scroll Left"
                         >
-                          <CreditCard className="w-3.5 h-3.5 text-[#796AEF]" />
-                          <span>Subscription</span>
+                          <ChevronLeft className="w-4 h-4" />
                         </button>
-
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => {
-                              onSwitchToStudentView({
-                                name: student.name,
-                                grade: student.grade,
-                                subject: student.subject,
-                                board: student.board,
-                                mediumOfLearning: student.mediumOfLearning,
-                              });
-                            }}
-                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                            title="Switch to student preview with this student's grade & subject"
-                          >
-                            <Eye className="w-3.5 h-3.5 text-[#796AEF]" />
-                            <span>Preview</span>
-                          </button>
-
-                          <button
-                            onClick={() => setSelectedStudentForModal(student)}
-                            className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 active:scale-95 text-[#796AEF] border border-indigo-200 text-xs font-bold rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                            <span>Report Card</span>
-                          </button>
-                        </div>
+                        <button
+                          id={`crm-scroll-right-${category.id}`}
+                          type="button"
+                          onClick={() => scrollCategoryRow(category.id, "right")}
+                          className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-600 flex items-center justify-center transition-all cursor-pointer"
+                          title="Scroll Right"
+                        >
+                          <ChevronRight className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
-                  );
-                })
-              )}
-            </div>
+
+                    {/* Horizontally Scrollable Track */}
+                    <div
+                      id={`crm-category-track-${category.id}`}
+                      className="flex gap-3 overflow-x-auto pb-2 pt-0.5 px-0.5 no-scrollbar sm:scrollbar-thin snap-x scroll-smooth"
+                    >
+                      {category.students.map((student) => renderStudentCard(student))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

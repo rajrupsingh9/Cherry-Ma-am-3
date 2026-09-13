@@ -412,9 +412,58 @@
         }
       },
       "required": ["studentName", "planId", "planName", "amountINR", "status", "isPro"]
+    },
+    "systemNotice": {
+      "title": "System Notice / Announcement",
+      "description": "Real-time notice published by administrators for student announcements, class timings, or emergency alerts",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Short headline of the announcement"
+        },
+        "message": {
+          "type": "string",
+          "description": "Full description or alert text"
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["info", "warning", "urgent"],
+          "description": "Importance level of the notice"
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether the notice is actively shown on student dashboards"
+        },
+        "actionText": {
+          "type": "string",
+          "description": "Optional CTA button label"
+        },
+        "actionLink": {
+          "type": "string",
+          "description": "Optional CTA destination or target screen"
+        },
+        "publishedBy": {
+          "type": "string",
+          "description": "Admin email who published the notice"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Notice publish timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last modified timestamp"
+        }
+      },
+      "required": ["title", "message", "priority", "isActive"]
     }
   },
   "firestore": {
+    "/systemNotices/{noticeId}": {
+      "schema": "systemNotice",
+      "description": "Real-time announcements and emergency notices published by Admin for students"
+    },
     "/systemConfig/{configId}": {
       "schema": "subscriptionSettings",
       "description": "System configuration holding custom subscription plans and receiver UPI details"

@@ -478,5 +478,23 @@ export interface AudioPodcastData {
   sourceContext?: string;
 }
 
+// ==========================================
+// 📢 Real-Time System Notice / Announcement Types
+// ==========================================
+export type NoticePriority = "info" | "warning" | "urgent";
+
+export interface SystemNotice {
+  id?: string;
+  title: string;
+  message: string;
+  priority: NoticePriority;
+  isActive: boolean;
+  actionText?: string;
+  actionLink?: string;
+  createdAt: string;
+  updatedAt?: string;
+  publishedBy?: string;
+}
+
 
 

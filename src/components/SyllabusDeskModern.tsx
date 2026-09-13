@@ -25,6 +25,7 @@ import { getCurated8020Report, getCuratedWeightageHeatmapReport, getCuratedPredi
 import { getTranslations } from "../utils/i18n";
 import { getActiveApiKey } from "../utils/geminiKeyStorage";
 import { AudioOverviewStudio } from "./AudioOverviewStudio";
+import { StudentNoticeBanner } from "./StudentNoticeBanner";
 
 interface SyllabusDeskModernProps {
   studentDetails: {
@@ -938,6 +939,11 @@ export const SyllabusDeskModern: React.FC<SyllabusDeskModernProps> = ({
           ========================================= */}
       <div className="space-y-3.5 flex-1 flex flex-col justify-start overflow-y-auto px-3.5 py-3 md:px-6 pr-0.5 pb-24 sm:pb-8">
         
+        {/* 📢 Real-Time Notice Broadcast Banner (0px space when no active notice) */}
+        <div className="w-full shrink-0">
+          <StudentNoticeBanner />
+        </div>
+
         {/* PREMIUM VISUAL PASSPORT / WELCOME BANNER */}
         <div className="bg-gradient-to-r from-indigo-700 via-[#796AEF] to-indigo-600 text-white p-4 sm:p-5 rounded-2xl sm:rounded-3xl text-left relative overflow-hidden shadow-md shrink-0 border border-indigo-500/40">
           {/* Subtle Ambient Glow */}

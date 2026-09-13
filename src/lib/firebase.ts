@@ -15,6 +15,7 @@ export const db = (() => {
     return initializeFirestore(app, {
       experimentalAutoDetectLongPolling: true,
       experimentalForceLongPolling: true,
+      ignoreUndefinedProperties: true,
     }, firebaseConfig.firestoreDatabaseId);
   } catch {
     return getFirestore(app, firebaseConfig.firestoreDatabaseId);

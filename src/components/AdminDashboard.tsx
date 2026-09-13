@@ -100,6 +100,7 @@ import {
 } from "../utils/referralStore";
 import { db } from "../lib/firebase";
 import { collection, getDocs, query, limit } from "firebase/firestore";
+import { AdminNoticeManager } from "./AdminNoticeManager";
 
 export interface StudentCRMRecord {
   id: string;
@@ -277,6 +278,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onToast,
   studentDetails,
 }) => {
+  const adminEmail = currentUser?.email || "onlinework0876@gmail.com";
   const [activeTab, setActiveTab] = useState<"overview" | "students" | "referrals" | "pricing" | "audit" | "analytics" | "access" | "specs">("overview");
   const [adminList, setAdminList] = useState<string[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState("");
@@ -2152,6 +2154,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {/* ================================================================= */}
         {activeTab === "overview" && (
           <div className="space-y-4">
+            {/* 📢 Real-Time Broadcast Notice Board (Admin Notice Management) */}
+            <AdminNoticeManager adminEmail={adminEmail} />
+
             {/* 4 High-Level KPI Cards Grid */}
             <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
               {/* Card 1: Registered Students */}

@@ -221,8 +221,8 @@ export const LearnerProfileModal: React.FC<LearnerProfileModalProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                {(plans && plans.length > 0 ? plans.slice(0, 3) : []).map((p) => {
-                  const isPopular = p.isPopular || p.id === "semiannual_149" || p.id === "quarterly";
+                {(plans && plans.length > 0 ? plans : []).map((p) => {
+                  const isPopular = !!p.popular;
                   return (
                     <div
                       key={p.id}
@@ -245,11 +245,11 @@ export const LearnerProfileModal: React.FC<LearnerProfileModalProps> = ({
                           ₹{p.priceINR}
                         </span>
                         <span className={`text-[10px] ${isPopular ? "text-indigo-600" : "text-slate-400"}`}>
-                          /{p.durationMonths} mo{p.durationMonths > 1 ? "s" : ""}
+                          /{p.durationLabel || `${p.durationMonths} mo${p.durationMonths > 1 ? "s" : ""}`}
                         </span>
                       </div>
                       <p className="text-[10px] text-slate-600 mt-1 line-clamp-2">
-                        {p.features && p.features[0] ? p.features[0] : "Full 1-on-1 AI Classroom & Smart Handbooks"}
+                        {p.tagline || (p.features && p.features[0] ? p.features[0] : "Full 1-on-1 AI Classroom & Smart Handbooks")}
                       </p>
                     </div>
                   );

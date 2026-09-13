@@ -115,15 +115,15 @@ service cloud.firestore {
       allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
       allow list: if isSignedIn() && (request.auth.uid == userId || isAdmin());
       
-      allow create: if isSignedIn() && isEmailVerifiedOrAnonymous() && isValidId(userId) && request.auth.uid == userId && isValidStudentProfile(incoming());
+      allow create: if (isAdmin() || (isSignedIn() && isEmailVerifiedOrAnonymous() && isValidId(userId) && request.auth.uid == userId && isValidStudentProfile(incoming())));
       
-      allow update: if isSignedIn() && isEmailVerifiedOrAnonymous() && request.auth.uid == userId && isValidStudentProfile(incoming()) && (
+      allow update: if (isAdmin() || (isSignedIn() && isEmailVerifiedOrAnonymous() && request.auth.uid == userId && isValidStudentProfile(incoming()) && (
         existing().userId == request.auth.uid &&
         incoming().userId == existing().userId &&
         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'grade', 'subject', 'board', 'mediumOfLearning', 'updatedAt'])
-      );
+      )));
       
-      allow delete: if false; // Profiles cannot be deleted by students to prevent orphaned resources
+      allow delete: if isAdmin(); // Admin can manage profiles, students cannot delete profiles to prevent orphaned resources
 
       // Board snapshots belonging to this student
       match /boardSnapshots/{snapshotId} {

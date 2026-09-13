@@ -21,6 +21,7 @@ import {
   Eye,
   EyeOff,
   Crown,
+  Star,
   RefreshCw,
   AlertCircle,
   Smartphone,
@@ -44,6 +45,7 @@ import {
   activateSubscription,
   DEFAULT_RECEIVER_UPI_ID,
   DEFAULT_MERCHANT_NAME,
+  matchProvisionedStudent,
 } from "../utils/subscriptionStore";
 import {
   addStoredApiKey,
@@ -194,8 +196,21 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
     };
   }, [onSubscriptionUpdated]);
 
-  const specialPlan =
-    plans.find((p) => p.id === "semiannual_149") || plans[0] || SUBSCRIPTION_PLANS[0];
+  const [selectedPlanId, setSelectedPlanId] = useState<string>(() => {
+    const popular = plans.find((p) => p.popular);
+    if (popular) return popular.id;
+    const semiannual = plans.find((p) => p.id === "semiannual_149");
+    if (semiannual) return semiannual.id;
+    return plans[0]?.id || SUBSCRIPTION_PLANS[0]?.id || "semiannual_149";
+  });
+
+  const selectedPlan: SubscriptionPlan =
+    plans.find((p) => p.id === selectedPlanId) ||
+    plans.find((p) => p.popular) ||
+    plans[0] ||
+    SUBSCRIPTION_PLANS[0];
+
+  const specialPlan = selectedPlan;
   const [activeTxnRef] = useState(() => generateTransactionReference());
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [userUtrInput, setUserUtrInput] = useState("");
@@ -229,6 +244,11 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
   }>({ status: "idle", message: "" });
   const [showReferralInput, setShowReferralInput] = useState<boolean>(Boolean(referralCodeInput));
   const [commissionConfig, setCommissionConfig] = useState(() => getReferralCommissionConfig());
+
+  // Direct Phone / Enrolled Student Quick-Access State
+  const [phoneLookupInput, setPhoneLookupInput] = useState("");
+  const [isCheckingPhone, setIsCheckingPhone] = useState(false);
+  const [showPhoneLookup, setShowPhoneLookup] = useState(false);
 
   // Auto-validate preloaded referral code from URL / localStorage on load
   useEffect(() => {
@@ -293,7 +313,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       merchantName: subState.merchantName || DEFAULT_MERCHANT_NAME,
       amount: specialPlan.priceINR,
       transactionRef: activeTxnRef,
-      note: `CherryAI 6-Month Pro - ${name || "Student"}`,
+      note: `CherryAI ${specialPlan.name} - ${name || "Student"}`,
     });
 
     QRCode.toDataURL(upiUri, {
@@ -309,15 +329,54 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       .catch((err) => console.error("Error generating UPI QR code:", err));
   }, [currentStep, subState, specialPlan.priceINR, activeTxnRef, name]);
 
-  // STEP 1: Direct Session Helper (Fallback for sandbox/preview domains)
-  const handleDirectStudentLogin = (customEmail?: string) => {
-    const studentEmail = (customEmail || "onlinework0876@gmail.com").trim();
-    const isSuperAdmin = studentEmail.toLowerCase() === "onlinework0876@gmail.com";
-    const studentName = name.trim() || (isSuperAdmin ? "Super Admin" : (studentEmail.split("@")[0] || "Student"));
+  // STEP 1: Direct Session Helper (Fallback for sandbox/preview domains & direct phone sign-in)
+  const handleDirectStudentLogin = async (customEmailOrPhone?: string) => {
+    const input = (customEmailOrPhone || "onlinework0876@gmail.com").trim();
+    const isPhone = /^\d{10}$/.test(input.replace(/\D/g, ""));
+    const cleanPhone = isPhone ? input.replace(/\D/g, "") : "";
+    const isEmail = input.includes("@");
+    const isSuperAdmin = input.toLowerCase() === "onlinework0876@gmail.com";
+
+    // 1. Check if this student was provisioned by Admin
+    const matchedProvision = await matchProvisionedStudent({
+      phone: cleanPhone || undefined,
+      email: isEmail ? input.toLowerCase() : undefined,
+    });
+
+    if (matchedProvision && matchedProvision.profileData && matchedProvision.subscription) {
+      const studentUser = {
+        uid: matchedProvision.subscription.id,
+        displayName: matchedProvision.profileData.name,
+        email: matchedProvision.subscription.studentEmail || (cleanPhone ? `student_${cleanPhone}@cherry.ai` : "student@cherry.ai"),
+        phoneNumber: cleanPhone || undefined,
+        isAnonymous: false,
+        photoURL: null,
+      };
+      try {
+        localStorage.setItem("local_active_user", JSON.stringify(studentUser));
+      } catch (_) {}
+      setAuthedUser(studentUser as any);
+      setName(matchedProvision.profileData.name);
+      onUserAuthenticated?.(studentUser);
+      onToast?.(
+        `🎉 Welcome back ${matchedProvision.profileData.name}! Admin-activated ${matchedProvision.subscription.planName} Pro access loaded!`,
+        "success"
+      );
+      onComplete({
+        name: matchedProvision.profileData.name,
+        grade: matchedProvision.profileData.grade,
+        board: matchedProvision.profileData.board,
+        mediumOfLearning: matchedProvision.profileData.mediumOfLearning,
+      });
+      return;
+    }
+
+    const studentName = name.trim() || (isSuperAdmin ? "Super Admin" : (isEmail ? (input.split("@")[0] || "Student") : `Student ${cleanPhone.slice(-4)}`));
     const studentUser = {
-      uid: isSuperAdmin ? "admin_super_0876" : ("student_" + Math.random().toString(36).substring(2, 9)),
+      uid: isSuperAdmin ? "admin_super_0876" : (cleanPhone ? `phone_${cleanPhone}` : ("student_" + Math.random().toString(36).substring(2, 9))),
       displayName: studentName,
-      email: studentEmail,
+      email: isEmail ? input : `${cleanPhone || "student"}@cherry.ai`,
+      phoneNumber: cleanPhone || undefined,
       isAnonymous: false,
       photoURL: null,
     };
@@ -331,8 +390,8 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
     onUserAuthenticated?.(studentUser);
     onToast?.(
       isSuperAdmin
-        ? `Logged in as ${studentEmail}! Super Admin Verified 🛡️✨`
-        : `Logged in as ${studentEmail}! Profile verified 🧑‍🎓✨`,
+        ? `Logged in as ${input}! Super Admin Verified 🛡️✨`
+        : `Logged in as ${studentName}! Profile verified 🧑‍🎓✨`,
       "success"
     );
     setTimeout(() => {
@@ -358,6 +417,29 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       if (loggedUser.displayName && !name) {
         setName(loggedUser.displayName);
       }
+
+      // Check if Admin already provisioned Pro access for this user
+      const provisionCheck = await matchProvisionedStudent({
+        uid: loggedUser.uid,
+        email: loggedUser.email || undefined,
+        phone: (loggedUser as any).phoneNumber || undefined,
+        displayName: loggedUser.displayName || undefined,
+      });
+
+      if (provisionCheck && provisionCheck.profileData && provisionCheck.subscription) {
+        onToast?.(
+          `🎉 Welcome ${provisionCheck.profileData.name}! Admin has already pre-activated your ${provisionCheck.subscription.planName} Pro access!`,
+          "success"
+        );
+        onComplete({
+          name: provisionCheck.profileData.name,
+          grade: provisionCheck.profileData.grade,
+          board: provisionCheck.profileData.board,
+          mediumOfLearning: provisionCheck.profileData.mediumOfLearning,
+        });
+        return;
+      }
+
       onToast?.(
         `Google account verified: ${loggedUser.displayName || loggedUser.email}! 🧑‍🎓✨`,
         "success"
@@ -501,7 +583,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       setIsActivatingPayment(false);
 
       triggerCelebrationConfetti();
-      onToast?.("🎉 ₹149 Pro Subscription Activated for 6 Full Months!", "success");
+      onToast?.(`🎉 ₹${specialPlan.priceINR} ${specialPlan.name} Activated for ${specialPlan.durationLabel || `${specialPlan.durationMonths} Months`}!`, "success");
 
       // Advance to Step 4: API Key Setup
       setCurrentStep("api_key_setup");
@@ -514,7 +596,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       merchantName: subState.merchantName || DEFAULT_MERCHANT_NAME,
       amount: specialPlan.priceINR,
       transactionRef: activeTxnRef,
-      note: `CherryAI 6-Month Pro - ${name || "Student"}`,
+      note: `CherryAI ${specialPlan.name} - ${name || "Student"}`,
     });
 
     let targetUrl = genericUri;
@@ -598,7 +680,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
   const STEPS_NAV = [
     { id: "google_login", label: "1. Google Login", short: "Login" },
     { id: "profile_setup", label: "2. Profile", short: "Profile" },
-    { id: "payment_149", label: "3. ₹149 Pro", short: "Payment" },
+    { id: "payment_149", label: `3. ₹${specialPlan.priceINR} Pro`, short: "Payment" },
     { id: "api_key_setup", label: "4. API Key", short: "API Key" },
     { id: "launch_app", label: "5. Ready", short: "Use App" },
   ];
@@ -655,7 +737,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
           <div className="flex items-center gap-1.5">
             <span className="text-[9.5px] font-bold text-[#796AEF] bg-indigo-50 border border-indigo-100/80 px-2.5 py-1 rounded-full flex items-center gap-1 shadow-2xs">
               <Award className="w-3 h-3 text-[#796AEF]" />
-              <span>₹149 / 6-Month Pass</span>
+              <span>₹{specialPlan.priceINR} / {specialPlan.durationLabel || `${specialPlan.durationMonths} Months`}</span>
             </span>
           </div>
         </header>
@@ -775,7 +857,77 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                         )}
                       </button>
 
-                      <div className="relative flex items-center justify-center pt-1">
+                      {/* Direct Phone / Enrolled Student Quick Login */}
+                      <div className="pt-1 border-t border-slate-100 space-y-2">
+                        {!showPhoneLookup ? (
+                          <button
+                            type="button"
+                            onClick={() => setShowPhoneLookup(true)}
+                            className="w-full py-2 px-3 rounded-xl bg-indigo-50/70 hover:bg-indigo-100/70 text-[#796AEF] border border-indigo-200/80 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                          >
+                            <Smartphone className="w-4 h-4 text-[#796AEF]" />
+                            <span>Enrolled by Admin? Login with Mobile Number</span>
+                          </button>
+                        ) : (
+                          <div className="p-3 bg-slate-50 rounded-xl border border-indigo-200 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[11px] font-bold text-slate-800 flex items-center gap-1.5">
+                                <Smartphone className="w-3.5 h-3.5 text-[#796AEF]" />
+                                <span>Enter Registered 10-digit Mobile</span>
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => setShowPhoneLookup(false)}
+                                className="text-[10px] font-bold text-slate-400 hover:text-slate-600"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            <div className="flex gap-2">
+                              <div className="relative flex-1">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                                  +91
+                                </span>
+                                <input
+                                  type="tel"
+                                  maxLength={10}
+                                  value={phoneLookupInput}
+                                  onChange={(e) => setPhoneLookupInput(e.target.value.replace(/\D/g, ""))}
+                                  placeholder="9876543210"
+                                  className="w-full pl-11 pr-3 py-2 bg-white rounded-lg border border-slate-300 text-xs font-mono font-bold text-slate-800 focus:outline-none focus:border-[#796AEF]"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                disabled={phoneLookupInput.length !== 10 || isCheckingPhone}
+                                onClick={async () => {
+                                  setIsCheckingPhone(true);
+                                  try {
+                                    await handleDirectStudentLogin(phoneLookupInput);
+                                  } finally {
+                                    setIsCheckingPhone(false);
+                                  }
+                                }}
+                                className="px-3.5 py-2 bg-[#796AEF] hover:bg-[#6858e0] disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                              >
+                                {isCheckingPhone ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <>
+                                    <span>Verify</span>
+                                    <ArrowRight className="w-3.5 h-3.5" />
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                            <p className="text-[10px] text-slate-500">
+                              Directly access your activated Pro syllabus without paying again.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="relative flex items-center justify-center pt-0.5">
                         <button
                           type="button"
                           onClick={() => handleDirectStudentLogin("onlinework0876@gmail.com")}
@@ -1036,7 +1188,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                     disabled={name.trim().length < 2}
                     className="w-full py-3.5 px-4 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-98 transition-all bg-[#796AEF] hover:bg-[#6858e0] text-white disabled:opacity-50"
                   >
-                    <span>Save Profile & Proceed to ₹149 Pro Payment</span>
+                    <span>Save Profile & Choose Pro Plan</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 </form>
@@ -1044,11 +1196,11 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
             )}
 
             {/* ============================================================ */}
-            {/* STEP 3: PAYMENT FOR ₹149 (FOR 6 MONTH SUBSCRIPTION)          */}
+            {/* STEP 3: DYNAMIC SUBSCRIPTION PLANS & UPI PAYMENT            */}
             {/* ============================================================ */}
             {currentStep === "payment_149" && (
               <motion.div
-                key="step-payment-149"
+                key="step-payment-dynamic"
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -12 }}
@@ -1058,43 +1210,156 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                 <div>
                   <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-50 border border-indigo-100/80 text-[#796AEF] text-[10px] font-bold uppercase tracking-wider mb-1.5 shadow-2xs">
                     <Crown className="w-3 h-3 text-amber-500" />
-                    <span>Exclusive Launch Offer / 6-Month Pass</span>
+                    <span>Affordable Student AI Access / छात्र योजना</span>
                   </div>
                   <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">
-                    ₹149 for 6-Month Pro Access
+                    Choose Your Pro Plan
                   </h2>
                   <p className="text-xs text-slate-600 font-medium mt-1">
-                    Complete 6-month unlimited AI tutoring pass (~₹24/month). No recurring automatic charges.
+                    Select a plan that fits your study goals. 1-time UPI payment with no recurring automatic charges.
                   </p>
                 </div>
 
-                {/* Plan Highlights Card */}
-                <div className="rounded-2xl p-4 bg-white border border-slate-200/90 shadow-xs space-y-3">
+                {/* DYNAMIC SUBSCRIPTION PLAN SELECTION CARDS */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 px-0.5">
+                    <span>Available Plans ({plans.length})</span>
+                    <span className="text-[10px] text-[#796AEF] font-semibold">Tap to select</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {plans.map((p) => {
+                      const isSelected = p.id === selectedPlan.id;
+                      return (
+                        <div
+                          key={p.id}
+                          onClick={() => setSelectedPlanId(p.id)}
+                          className={`relative p-3.5 rounded-2xl border transition-all cursor-pointer select-none text-left ${
+                            isSelected
+                              ? "bg-indigo-50/40 border-[#796AEF] shadow-sm ring-2 ring-[#796AEF]/20"
+                              : "bg-white border-slate-200/90 hover:border-slate-300 shadow-2xs"
+                          }`}
+                        >
+                          {/* Badge if Popular or Discount */}
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span
+                                className={`text-[9.5px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                                  isSelected
+                                    ? "bg-[#796AEF] text-white"
+                                    : "bg-indigo-50 text-[#796AEF] border border-indigo-100/80"
+                                }`}
+                              >
+                                {p.durationLabel || `${p.durationMonths} Months`}
+                              </span>
+                              {p.popular && (
+                                <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                                  <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                                  <span>Most Popular</span>
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Price & Discount */}
+                            <div className="text-right flex items-baseline gap-1.5 shrink-0">
+                              {p.originalPriceINR && p.originalPriceINR > p.priceINR && (
+                                <span className="text-[11px] text-slate-400 line-through font-semibold">
+                                  ₹{p.originalPriceINR}
+                                </span>
+                              )}
+                              <span
+                                className={`text-lg sm:text-xl font-black ${
+                                  isSelected ? "text-[#796AEF]" : "text-slate-900"
+                                }`}
+                              >
+                                ₹{p.priceINR}
+                              </span>
+                              {p.discountPercent ? (
+                                <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded">
+                                  {p.discountPercent}% OFF
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          {/* Plan Name & Tagline */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <h3 className="text-xs sm:text-sm font-black text-slate-900 flex items-center gap-1.5">
+                                <span>{p.name}</span>
+                              </h3>
+                              <p className="text-[11px] text-slate-600 font-medium line-clamp-1 mt-0.5">
+                                {p.tagline || `${p.durationLabel} unlimited Socratic tutoring pass`}
+                              </p>
+                            </div>
+
+                            {/* Radio indicator */}
+                            <div
+                              className={`w-5 h-5 rounded-full border flex items-center justify-center shrink-0 mt-0.5 transition-all ${
+                                isSelected
+                                  ? "border-[#796AEF] bg-[#796AEF] text-white"
+                                  : "border-slate-300 bg-white"
+                              }`}
+                            >
+                              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                            </div>
+                          </div>
+
+                          {/* Features Pills */}
+                          {p.features && p.features.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap gap-1.5">
+                              {p.features.slice(0, 3).map((feat, idx) => (
+                                <span
+                                  key={idx}
+                                  className="text-[9.5px] font-medium text-slate-600 bg-slate-100/80 px-2 py-0.5 rounded-md flex items-center gap-1"
+                                >
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                                  <span className="truncate max-w-[150px]">{feat}</span>
+                                </span>
+                              ))}
+                              {p.features.length > 3 && (
+                                <span className="text-[9px] font-bold text-slate-400 self-center">
+                                  +{p.features.length - 3} more
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Selected Plan Summary Banner */}
+                <div className="rounded-2xl p-3.5 bg-white border border-indigo-100/90 shadow-2xs space-y-2">
                   <div className="flex items-center justify-between">
                     <div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#796AEF] bg-indigo-50 border border-indigo-100/80 px-2 py-0.5 rounded-full">
-                        6 Months Special Pass
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-[#796AEF] bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full">
+                        Selected Plan
                       </span>
-                      <h3 className="text-base font-black text-slate-900 mt-1">
-                        Full Semester & Exam Booster
-                      </h3>
+                      <h4 className="text-xs font-black text-slate-900 mt-1">
+                        {selectedPlan.name} ({selectedPlan.durationLabel || `${selectedPlan.durationMonths} Months`})
+                      </h4>
                     </div>
                     <div className="text-right">
-                      <span className="text-xs text-slate-400 line-through mr-1 font-bold">₹999</span>
-                      <span className="text-2xl font-black text-[#796AEF]">₹149</span>
-                      <span className="block text-[9.5px] font-bold text-emerald-600">85% OFF</span>
+                      <span className="text-xs text-slate-400 line-through mr-1 font-bold">
+                        ₹{selectedPlan.originalPriceINR || selectedPlan.priceINR * 2}
+                      </span>
+                      <span className="text-xl font-black text-[#796AEF]">
+                        ₹{selectedPlan.priceINR}
+                      </span>
                     </div>
                   </div>
 
                   {/* Bullet perks */}
-                  <div className="grid grid-cols-2 gap-1.5 text-[10.5px] font-semibold text-slate-700 pt-1">
+                  <div className="grid grid-cols-2 gap-1.5 text-[10px] font-semibold text-slate-700 pt-1 border-t border-slate-100">
                     <div className="flex items-center gap-1.5">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span>6 Months Unlimited Tutoring</span>
+                      <span>{selectedPlan.durationMonths} Months AI Tutoring</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span>Class 6-12 Virtual STEM Lab</span>
+                      <span>STEM Whiteboard Labs</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
@@ -1112,7 +1377,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                   <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-center space-y-2">
                     <div className="flex items-center justify-center gap-1.5 text-emerald-800 font-bold text-xs">
                       <Award className="w-4 h-4 text-emerald-600" />
-                      <span>Active 6-Month Pro Pass Detected!</span>
+                      <span>Active Pro Pass Detected ({subState.activePlanId || "Active"})!</span>
                     </div>
                     <button
                       type="button"
@@ -1128,7 +1393,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                     {/* Method 1: Mobile 1-Tap UPI Apps */}
                     <div className="space-y-1.5">
                       <span className="text-[10.5px] font-bold uppercase tracking-wider text-slate-700 block">
-                        Method 1: Pay via 1-Tap Mobile UPI App
+                        Method 1: Pay ₹{selectedPlan.priceINR} via 1-Tap Mobile UPI App
                       </span>
                       <div className="grid grid-cols-3 gap-2">
                         <button
@@ -1399,7 +1664,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                   <div className="flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-100 text-xs">
                     <span className="font-medium text-slate-600">Pro Subscription</span>
                     <span className="font-bold text-[#796AEF] bg-indigo-50 border border-indigo-100/80 px-2 py-0.5 rounded-md text-[11px]">
-                      6 Months Pass Active (₹149)
+                      {specialPlan.name} ({specialPlan.durationLabel || `${specialPlan.durationMonths} Mo`}) Active • ₹{specialPlan.priceINR}
                     </span>
                   </div>
 

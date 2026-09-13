@@ -55,7 +55,11 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
 }) => {
   const [subState, setSubState] = useState<SubscriptionState>(loadSubscriptionState());
   const [plans, setPlans] = useState<SubscriptionPlan[]>(() => getActiveSubscriptionPlans());
-  const [selectedPlanId, setSelectedPlanId] = useState<string>("quarterly");
+  const [selectedPlanId, setSelectedPlanId] = useState<string>(() => {
+    const active = getActiveSubscriptionPlans();
+    const popular = active.find((p) => p.popular);
+    return popular?.id || active[0]?.id || "semiannual_149";
+  });
   const [step, setStep] = useState<"plans" | "checkout" | "success" | "history">("plans");
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [activeTxnRef, setActiveTxnRef] = useState<string>("");
@@ -68,15 +72,15 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
   const [countdownSeconds, setCountdownSeconds] = useState(600); // 10 mins payment window
   const [showReceiptModal, setShowReceiptModal] = useState(false);
 
-  const selectedPlan = plans.find((p) => p.id === selectedPlanId) || plans[0] || SUBSCRIPTION_PLANS[1];
+  const selectedPlan = plans.find((p) => p.id === selectedPlanId) || plans[0] || SUBSCRIPTION_PLANS[0];
   const expiryStatus = getSubscriptionExpiryStatus(subState.subscriptionExpires);
 
   const activeReceiptRecord: StudentSubscriptionRecord = {
     id: subState.activePlanId || "sub_active",
     studentName: studentName,
-    planId: subState.activePlanId || "semiannual_149",
-    planName: subState.activePlanName || "6 Months Special Pass",
-    amountINR: subState.transactions[0]?.amountINR || 149,
+    planId: subState.activePlanId || selectedPlan?.id || "semiannual_149",
+    planName: subState.activePlanName || selectedPlan?.name || "Pro Access",
+    amountINR: subState.transactions[0]?.amountINR || selectedPlan?.priceINR || 149,
     status: "active",
     isPro: true,
     utrNumber: subState.transactions[0]?.transactionId || undefined,
@@ -89,7 +93,13 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
   // Refresh local subscription state on modal open & listen for real-time plan & UPI updates
   useEffect(() => {
     const handlePlansUpdated = (e: any) => {
-      setPlans(e.detail || getActiveSubscriptionPlans());
+      const updated = e.detail || getActiveSubscriptionPlans();
+      setPlans(updated);
+      setSelectedPlanId((prev) => {
+        if (updated.some((p: any) => p.id === prev)) return prev;
+        const pop = updated.find((p: any) => p.popular);
+        return pop?.id || updated[0]?.id || "semiannual_149";
+      });
     };
     const handleUpiUpdated = (e: any) => {
       const rec = e.detail?.receiverUpiId || DEFAULT_RECEIVER_UPI_ID;
@@ -118,16 +128,18 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setPlans(getActiveSubscriptionPlans());
+      const active = getActiveSubscriptionPlans();
+      setPlans(active);
+      setSelectedPlanId((prev) => {
+        if (active.some((p) => p.id === prev)) return prev;
+        const pop = active.find((p) => p.popular);
+        return pop?.id || active[0]?.id || "semiannual_149";
+      });
       const state = loadSubscriptionState();
       setSubState(state);
       setCustomUpiInput(state.customUpiReceiverId || DEFAULT_RECEIVER_UPI_ID);
       setMerchantNameInput(state.merchantName || DEFAULT_MERCHANT_NAME);
-      if (state.isPro) {
-        setStep("plans");
-      } else {
-        setStep("plans");
-      }
+      setStep("plans");
     }
   }, [isOpen]);
 

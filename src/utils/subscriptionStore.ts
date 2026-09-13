@@ -122,9 +122,11 @@ export interface StudentSubscriptionRecord {
   id: string; // student ID or email
   studentName: string;
   studentEmail?: string;
+  studentPhone?: string;
   grade?: string;
   board?: string;
   subject?: string;
+  mediumOfLearning?: string;
   isPro: boolean;
   status: "active" | "pending_verification" | "free" | "expired" | "suspended";
   planId: string;
@@ -136,6 +138,7 @@ export interface StudentSubscriptionRecord {
   expiresAt?: string;
   approvedBy?: string;
   notes?: string;
+  isManualAdminProvisioned?: boolean;
 }
 
 export const STUDENT_SUBSCRIPTIONS_STORAGE_KEY = "cherry_student_subscriptions_v1";
@@ -672,6 +675,145 @@ export function approveStudentSubscription(params: {
   return updatedRecord;
 }
 
+/**
+ * Phase 1: Provision Student Directly by Admin (Manual Onboarding)
+ * Allows Admin to directly register a student with pre-activated Pro Access
+ * without requiring the student to complete self-enrollment or payment forms.
+ */
+export async function provisionStudentDirectlyByAdmin(params: {
+  studentName: string;
+  studentPhone: string;
+  studentEmail?: string;
+  grade: string;
+  board: string;
+  subject: string;
+  mediumOfLearning?: string;
+  planId: string;
+  adminEmail?: string;
+  notes?: string;
+  customDurationMonths?: number;
+}): Promise<{
+  subscriptionRecord: StudentSubscriptionRecord;
+  studentId: string;
+}> {
+  const plans = getActiveSubscriptionPlans();
+  const chosenPlan = plans.find((p) => p.id === params.planId) || plans[0];
+  const now = new Date();
+  const durationMonths = params.customDurationMonths || chosenPlan.durationMonths || 6;
+  const expires = new Date();
+  expires.setMonth(expires.getMonth() + durationMonths);
+
+  // Generate deterministic ID or clean unique student ID
+  const cleanPhone = params.studentPhone.replace(/\D/g, "");
+  const studentId = cleanPhone ? `phone_${cleanPhone}` : `admin_std_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+  const subscriptionRecord: StudentSubscriptionRecord = {
+    id: studentId,
+    studentName: params.studentName.trim(),
+    studentPhone: cleanPhone || undefined,
+    studentEmail: params.studentEmail?.trim() || undefined,
+    grade: params.grade,
+    board: params.board,
+    subject: params.subject,
+    mediumOfLearning: params.mediumOfLearning || "Hinglish",
+    isPro: true,
+    status: "active",
+    planId: chosenPlan.id,
+    planName: chosenPlan.name,
+    amountINR: chosenPlan.priceINR,
+    utrNumber: `ADMIN-ONBOARD-${Date.now().toString().slice(-6)}`,
+    submittedAt: now.toLocaleDateString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
+    activatedAt: now.toISOString(),
+    expiresAt: expires.toISOString(),
+    approvedBy: params.adminEmail || auth.currentUser?.email || "Admin",
+    notes: params.notes?.trim() || "Manually Onboarded & Activated by Admin",
+    isManualAdminProvisioned: true,
+  };
+
+  // 1. Save into local student subscriptions list
+  const currentList = getStudentSubscriptions();
+  const existingIdx = currentList.findIndex(
+    (s) =>
+      s.id === studentId ||
+      (cleanPhone && s.studentPhone === cleanPhone) ||
+      (params.studentEmail && s.studentEmail && s.studentEmail.toLowerCase() === params.studentEmail.toLowerCase())
+  );
+
+  let updatedList: StudentSubscriptionRecord[];
+  if (existingIdx >= 0) {
+    updatedList = [...currentList];
+    updatedList[existingIdx] = { ...currentList[existingIdx], ...subscriptionRecord };
+  } else {
+    updatedList = [subscriptionRecord, ...currentList];
+  }
+  saveStudentSubscriptions(updatedList);
+
+  // 2. Persist to Firestore: studentSubscriptions
+  try {
+    const subDocRef = doc(db, "studentSubscriptions", studentId);
+    await setDoc(subDocRef, subscriptionRecord, { merge: true });
+  } catch (err) {
+    console.warn("[provisionStudentDirectlyByAdmin] Could not save to studentSubscriptions in Firestore:", err);
+  }
+
+  // 3. Persist to Firestore: studentProfiles so Student Profile is ready immediately
+  try {
+    const profileDocRef = doc(db, "studentProfiles", studentId);
+    await setDoc(
+      profileDocRef,
+      {
+        userId: studentId,
+        name: params.studentName.trim(),
+        phone: cleanPhone || "",
+        email: params.studentEmail?.trim() || "",
+        grade: params.grade,
+        board: params.board,
+        subject: params.subject,
+        mediumOfLearning: params.mediumOfLearning || "Hinglish",
+        isPro: true,
+        subscriptionStatus: "active",
+        subscriptionPlan: chosenPlan.name,
+        subscriptionExpires: expires.toISOString(),
+        isManualAdminProvisioned: true,
+        onboardedByAdmin: params.adminEmail || auth.currentUser?.email || "Admin",
+        updatedAt: now.toISOString(),
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn("[provisionStudentDirectlyByAdmin] Could not save to studentProfiles in Firestore:", err);
+  }
+
+  // 4. If current active browser session matches this student, activate Pro locally
+  try {
+    const localUserRaw = localStorage.getItem("local_active_user");
+    let match = false;
+    if (localUserRaw) {
+      const localUser = JSON.parse(localUserRaw);
+      if (
+        localUser.uid === studentId ||
+        (cleanPhone && localUser.phoneNumber && localUser.phoneNumber.replace(/\D/g, "") === cleanPhone) ||
+        (params.studentEmail && localUser.email && localUser.email.toLowerCase() === params.studentEmail.toLowerCase())
+      ) {
+        match = true;
+      }
+    }
+    if (match) {
+      const currentSub = loadSubscriptionState();
+      saveSubscriptionState({
+        ...currentSub,
+        isPro: true,
+        activePlanId: chosenPlan.id,
+        activePlanName: chosenPlan.name,
+        subscriptionStart: now.toISOString(),
+        subscriptionExpires: expires.toISOString(),
+      });
+    }
+  } catch (_) {}
+
+  return { subscriptionRecord, studentId };
+}
+
 export function revokeStudentSubscription(params: {
   studentId: string;
   reason?: string;
@@ -974,4 +1116,91 @@ export async function saveStudentSubscriptionToCloud(
     return false;
   }
 }
+
+/**
+ * Phase 4: Match and claim a provisioned student profile & active Pro subscription
+ * Checks local and Firestore subscriptions by phone, email, or student ID.
+ */
+export async function matchProvisionedStudent(params: {
+  phone?: string;
+  email?: string;
+  displayName?: string;
+  uid?: string;
+}): Promise<{
+  subscription: StudentSubscriptionRecord | null;
+  profileData: {
+    name: string;
+    grade: string;
+    board: string;
+    subject: string;
+    mediumOfLearning: string;
+  } | null;
+}> {
+  const cleanPhone = params.phone ? params.phone.replace(/\D/g, "") : "";
+  const cleanEmail = params.email?.trim().toLowerCase() || "";
+  const cleanName = params.displayName?.trim().toLowerCase() || "";
+  const currentUid = params.uid?.trim() || "";
+
+  // 1. Check local subscriptions first
+  const localList = getStudentSubscriptions();
+  let foundSub = localList.find((s) => {
+    if (currentUid && s.id === currentUid) return true;
+    if (cleanPhone && s.studentPhone && s.studentPhone.replace(/\D/g, "") === cleanPhone) return true;
+    if (cleanEmail && s.studentEmail && s.studentEmail.toLowerCase() === cleanEmail) return true;
+    if (cleanName && s.studentName && s.studentName.toLowerCase() === cleanName) return true;
+    return false;
+  });
+
+  // 2. If not found locally, query Firestore
+  if (!foundSub) {
+    try {
+      const snap = await getDocs(collection(db, "studentSubscriptions"));
+      if (!snap.empty) {
+        snap.forEach((d) => {
+          if (foundSub) return;
+          const data = d.data() as StudentSubscriptionRecord;
+          if (currentUid && (d.id === currentUid || data.id === currentUid)) {
+            foundSub = { ...data, id: d.id };
+          } else if (cleanPhone && data.studentPhone && data.studentPhone.replace(/\D/g, "") === cleanPhone) {
+            foundSub = { ...data, id: d.id };
+          } else if (cleanEmail && data.studentEmail && data.studentEmail.toLowerCase() === cleanEmail) {
+            foundSub = { ...data, id: d.id };
+          } else if (cleanName && data.studentName && data.studentName.toLowerCase() === cleanName) {
+            foundSub = { ...data, id: d.id };
+          }
+        });
+      }
+    } catch (err) {
+      console.warn("[matchProvisionedStudent] Firestore search error:", err);
+    }
+  }
+
+  if (foundSub && foundSub.isPro && foundSub.status === "active") {
+    // Sync to local subscription state so app grants full Pro instantly
+    const now = new Date();
+    const expires = foundSub.expiresAt || new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000).toISOString();
+    const currentSub = loadSubscriptionState();
+    saveSubscriptionState({
+      ...currentSub,
+      isPro: true,
+      activePlanId: foundSub.planId || "semiannual_149",
+      activePlanName: foundSub.planName || "Pro Tier",
+      subscriptionStart: foundSub.activatedAt || now.toISOString(),
+      subscriptionExpires: expires,
+    });
+
+    const profileData = {
+      name: foundSub.studentName || params.displayName || "Student",
+      grade: foundSub.grade || "Class 10",
+      board: foundSub.board || "CBSE",
+      subject: foundSub.subject || "Science",
+      mediumOfLearning: foundSub.mediumOfLearning || "Hinglish",
+    };
+
+    return { subscription: foundSub, profileData };
+  }
+
+  return { subscription: null, profileData: null };
+}
+
 

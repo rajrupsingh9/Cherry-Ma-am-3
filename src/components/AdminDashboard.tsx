@@ -28,6 +28,7 @@ import {
   SlidersHorizontal,
   ExternalLink,
   UserCheck,
+  UserPlus,
   X,
   Award,
   ArrowRight,
@@ -83,6 +84,7 @@ import {
   getSubscriptionExpiryStatus,
 } from "../utils/subscriptionStore";
 import { FeeReceiptModal } from "./FeeReceiptModal";
+import { AdminUnifiedPlanManager } from "./AdminUnifiedPlanManager";
 import { AdminReferralDetailModal } from "./AdminReferralDetailModal";
 import { AdminPayoutRequestsQueue } from "./AdminPayoutRequestsQueue";
 import { AdminPayoutApprovalModal } from "./AdminPayoutApprovalModal";
@@ -101,11 +103,13 @@ import {
 import { db } from "../lib/firebase";
 import { collection, getDocs, query, limit } from "firebase/firestore";
 import { AdminNoticeManager } from "./AdminNoticeManager";
+import { AdminManualOnboardModal } from "./AdminManualOnboardModal";
 
 export interface StudentCRMRecord {
   id: string;
   name: string;
   email?: string;
+  phone?: string;
   grade: string;
   board: string;
   subject: string;
@@ -122,12 +126,14 @@ export interface StudentCRMRecord {
   isPro?: boolean;
   subscriptionStatus?: "active" | "pending_verification" | "free" | "expired" | "suspended";
   subscriptionPlan?: string;
+  planId?: string;
   subscriptionExpires?: string;
   utrNumber?: string;
   paymentAmount?: number;
   submittedAt?: string;
   approvedBy?: string;
   notes?: string;
+  isManualAdminProvisioned?: boolean;
 }
 
 const SAMPLE_STUDENTS: StudentCRMRecord[] = [
@@ -294,87 +300,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [hasPlanChanges, setHasPlanChanges] = useState(false);
   const [isSavingPlans, setIsSavingPlans] = useState(false);
 
-  const handlePlanPriceChange = (planId: string, newPrice: number) => {
-    const val = isNaN(newPrice) ? 0 : Math.max(0, newPrice);
-    setPlans((prev) =>
-      prev.map((p) => {
-        if (p.id !== planId) return p;
-        const original = p.originalPriceINR || (val > 0 ? val * 2 : 100);
-        const discount = original > 0 ? Math.max(0, Math.min(99, Math.round(((original - val) / original) * 100))) : 0;
-        return {
-          ...p,
-          priceINR: val,
-          discountPercent: discount,
-        };
-      })
-    );
-    setHasPlanChanges(true);
-  };
-
-  const handlePlanOriginalPriceChange = (planId: string, newOriginal: number) => {
-    const val = isNaN(newOriginal) ? 0 : Math.max(0, newOriginal);
-    setPlans((prev) =>
-      prev.map((p) => {
-        if (p.id !== planId) return p;
-        const currentPrice = p.priceINR;
-        const discount = val > 0 ? Math.max(0, Math.min(99, Math.round(((val - currentPrice) / val) * 100))) : 0;
-        return {
-          ...p,
-          originalPriceINR: val,
-          discountPercent: discount,
-        };
-      })
-    );
-    setHasPlanChanges(true);
-  };
-
-  const handlePlanDurationChange = (planId: string, newMonths: number) => {
-    const val = isNaN(newMonths) ? 1 : Math.max(1, newMonths);
-    setPlans((prev) =>
-      prev.map((p) => {
-        if (p.id !== planId) return p;
-        const defaultLabel =
-          val === 1
-            ? "1 Month"
-            : val === 12
-            ? "1 Full Year (12 Months)"
-            : `${val} Months`;
-        return {
-          ...p,
-          durationMonths: val,
-          durationLabel: defaultLabel,
-        };
-      })
-    );
-    setHasPlanChanges(true);
-  };
-
-  const handlePlanLabelChange = (planId: string, label: string) => {
-    setPlans((prev) =>
-      prev.map((p) => (p.id === planId ? { ...p, durationLabel: label } : p))
-    );
-    setHasPlanChanges(true);
-  };
-
-  const handlePlanTaglineChange = (planId: string, tagline: string) => {
-    setPlans((prev) =>
-      prev.map((p) => (p.id === planId ? { ...p, tagline } : p))
-    );
-    setHasPlanChanges(true);
-  };
-
-  const handleTogglePopular = (planId: string) => {
-    setPlans((prev) =>
-      prev.map((p) => (p.id === planId ? { ...p, popular: !p.popular } : p))
-    );
-    setHasPlanChanges(true);
-  };
-
-  const handleSaveAllPlans = async () => {
+  const handleSaveAllPlans = async (newPlans?: SubscriptionPlan[]) => {
     setIsSavingPlans(true);
+    const plansToSave = newPlans || plans;
     try {
-      saveCustomSubscriptionPlans(plans);
-      await saveSubscriptionSettingsToCloud(plans, upiConfig);
+      saveCustomSubscriptionPlans(plansToSave);
+      await saveSubscriptionSettingsToCloud(plansToSave, upiConfig);
+      setPlans(plansToSave);
       setHasPlanChanges(false);
       onToast?.("Subscription pricing & validity updated in Local & Cloud! 💳☁️", "success");
     } catch (e) {
@@ -483,6 +415,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [approvalNotesInput, setApprovalNotesInput] = useState<string>("");
   const [isProcessingAction, setIsProcessingAction] = useState(false);
   const [copiedUtrId, setCopiedUtrId] = useState<string | null>(null);
+  const [showManualOnboardModal, setShowManualOnboardModal] = useState(false);
 
   // Sync with student subscriptions events
   useEffect(() => {
@@ -511,11 +444,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           id: docSnap.id,
           name: d.name || "Student " + docSnap.id.slice(0, 5),
           email: d.email || undefined,
+          phone: d.phone || undefined,
           grade: d.grade || "Class 10",
           board: d.board || "CBSE",
           subject: d.subject || "Science",
           mediumOfLearning: d.mediumOfLearning || "Hinglish",
-          updatedAt: d.updatedAt ? new Date(d.updatedAt).toLocaleDateString() : "Active recently",
+          updatedAt: d.updatedAt ? (typeof d.updatedAt === "string" ? new Date(d.updatedAt).toLocaleDateString() : "Active recently") : "Active recently",
           totalSessions: d.totalSessions || 3,
           totalQuizzes: d.totalQuizzes || 2,
           quizAccuracy: d.quizAccuracy || 85,
@@ -523,6 +457,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           strongTopics: d.strongTopics || [d.subject || "Core Concepts"],
           isRealFirestoreUser: true,
           notesCount: d.notesCount || 3,
+          isManualAdminProvisioned: d.isManualAdminProvisioned || false,
         });
       });
 
@@ -642,11 +577,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Merge student CRM records with local & Firestore subscription state
   const mergedStudents = useMemo(() => {
-    return students.map((std) => {
+    const list = students.map((std) => {
       const sub = studentSubscriptions.find(
         (s) =>
           s.id === std.id ||
           (std.email && s.studentEmail && s.studentEmail.toLowerCase() === std.email.toLowerCase()) ||
+          (std.phone && s.studentPhone && s.studentPhone === std.phone) ||
           s.studentName.toLowerCase() === std.name.toLowerCase()
       );
 
@@ -662,6 +598,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           submittedAt: sub.submittedAt || std.submittedAt,
           approvedBy: sub.approvedBy || std.approvedBy,
           notes: sub.notes || std.notes,
+          phone: std.phone || sub.studentPhone,
+          isManualAdminProvisioned: std.isManualAdminProvisioned || sub.isManualAdminProvisioned || false,
         };
       }
       return {
@@ -671,6 +609,49 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         subscriptionPlan: std.subscriptionPlan ?? "Free Tier",
       };
     });
+
+    // Also include any manually provisioned or subscribed students that might not be in the initial students list
+    studentSubscriptions.forEach((sub) => {
+      const alreadyIncluded = list.some(
+        (s) =>
+          s.id === sub.id ||
+          (s.email && sub.studentEmail && s.email.toLowerCase() === sub.studentEmail.toLowerCase()) ||
+          (s.phone && sub.studentPhone && s.phone === sub.studentPhone) ||
+          s.name.toLowerCase() === sub.studentName.toLowerCase()
+      );
+      if (!alreadyIncluded) {
+        list.unshift({
+          id: sub.id,
+          name: sub.studentName,
+          email: sub.studentEmail,
+          phone: sub.studentPhone,
+          grade: sub.grade || "Class 10",
+          board: sub.board || "CBSE",
+          subject: sub.subject || "Science",
+          mediumOfLearning: sub.mediumOfLearning || "Hinglish",
+          updatedAt: sub.submittedAt || "Just now",
+          totalSessions: 1,
+          totalQuizzes: 0,
+          quizAccuracy: 100,
+          weakTopics: [],
+          strongTopics: [sub.subject || "All Subjects"],
+          isRealFirestoreUser: true,
+          notesCount: 0,
+          isPro: sub.isPro,
+          subscriptionStatus: sub.status,
+          subscriptionPlan: sub.planName,
+          subscriptionExpires: sub.expiresAt ? new Date(sub.expiresAt).toLocaleDateString() : undefined,
+          utrNumber: sub.utrNumber,
+          paymentAmount: sub.amountINR || 0,
+          submittedAt: sub.submittedAt,
+          approvedBy: sub.approvedBy,
+          notes: sub.notes,
+          isManualAdminProvisioned: sub.isManualAdminProvisioned || true,
+        });
+      }
+    });
+
+    return list;
   }, [students, studentSubscriptions]);
 
   const pendingUtrCount = useMemo(() => {
@@ -839,7 +820,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleQuickApprove = (student: StudentCRMRecord, planId?: string) => {
     setIsProcessingAction(true);
     try {
-      const chosenPlan = planId || selectedPlanForApproval || "semiannual_149";
+      const chosenPlan = planId || student.planId || selectedPlanForApproval || plans[0]?.id || "semiannual_149";
       const approved = approveStudentSubscription({
         studentId: student.id,
         planId: chosenPlan,
@@ -1197,14 +1178,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                 </div>
 
-                <button
-                  onClick={() => fetchStudents(true)}
-                  disabled={isLoadingStudents}
-                  className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-[#796AEF] rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isLoadingStudents ? "animate-spin" : ""}`} />
-                  <span>Sync Firestore</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setShowManualOnboardModal(true)}
+                    className="px-2.5 py-1 bg-gradient-to-r from-indigo-600 to-[#796AEF] hover:from-indigo-700 hover:to-indigo-600 active:scale-95 text-white rounded-lg text-[11px] font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>+ Onboard Student</span>
+                  </button>
+
+                  <button
+                    onClick={() => fetchStudents(true)}
+                    disabled={isLoadingStudents}
+                    className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-[#796AEF] rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingStudents ? "animate-spin" : ""}`} />
+                    <span>Sync Firestore</span>
+                  </button>
+                </div>
               </div>
 
               {/* Search input */}
@@ -1392,6 +1383,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <h4 className="text-xs sm:text-sm font-bold text-slate-900 truncate">
                                 {student.name}
                               </h4>
+                              {student.isManualAdminProvisioned && (
+                                <span className="text-[9px] font-bold bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded-md shrink-0 border border-indigo-200 flex items-center gap-0.5">
+                                  <Sparkles className="w-2.5 h-2.5" />
+                                  Admin Direct
+                                </span>
+                              )}
                               {student.isRealFirestoreUser ? (
                                 <span className="text-[9px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.2 rounded-md shrink-0">
                                   Live Sync
@@ -1408,6 +1405,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <span>{student.board}</span>
                               <span>•</span>
                               <span>{student.subject}</span>
+                              {student.phone && (
+                                <>
+                                  <span>•</span>
+                                  <span className="text-slate-600 font-mono font-medium">📱 {student.phone}</span>
+                                </>
+                              )}
                               {student.email && (
                                 <>
                                   <span>•</span>
@@ -1498,7 +1501,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <button
                               onClick={() => {
                                 setManagingSubStudent(student);
-                                setSelectedPlanForApproval("semiannual_149");
+                                setSelectedPlanForApproval(student.planId || plans[0]?.id || "semiannual_149");
                                 setApprovalNotesInput(`Approved UTR: ${student.utrNumber || "Verified"}`);
                               }}
                               className="text-[11px] font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer"
@@ -1508,7 +1511,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                             <div className="flex items-center gap-1.5">
                               <button
-                                onClick={() => handleQuickApprove(student, "semiannual_149")}
+                                onClick={() => handleQuickApprove(student, student.planId || plans[0]?.id)}
                                 disabled={isProcessingAction}
                                 className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center gap-1 cursor-pointer"
                               >
@@ -2507,239 +2510,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             </div>
 
-            {/* List of Configurable Plans */}
-            <div className="space-y-3.5">
-              {plans.map((plan, index) => {
-                const isLaunchDefault = plan.id === "semiannual_149";
-                return (
-                  <div
-                    key={plan.id}
-                    className={`bg-white rounded-2xl p-4 border transition-all shadow-xs space-y-3.5 ${
-                      isLaunchDefault
-                        ? "border-indigo-300 ring-1 ring-indigo-100"
-                        : "border-slate-200"
-                    }`}
-                  >
-                    {/* Plan Card Header */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                      <div className="flex items-center gap-2">
-                        <span className="w-6 h-6 rounded-lg bg-indigo-50 text-[#796AEF] font-bold text-xs flex items-center justify-center">
-                          {index + 1}
-                        </span>
-                        <div>
-                          <h4 className="text-sm font-bold text-slate-900 leading-none">
-                            {plan.name}
-                          </h4>
-                          <span className="text-[10px] font-mono text-slate-400">
-                            id: {plan.id}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {isLaunchDefault && (
-                          <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-[#796AEF] text-[10px] font-bold rounded-full">
-                            Student Default Offer
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => handleTogglePopular(plan.id)}
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
-                            plan.popular
-                              ? "bg-amber-50 border-amber-200 text-amber-700"
-                              : "bg-slate-50 border-slate-200 text-slate-400 hover:text-slate-600"
-                          }`}
-                        >
-                          <span>★ Popular</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Tagline / Pitch */}
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                        <Tag className="w-3 h-3 text-slate-400" />
-                        <span>Tagline / Offer Message</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={plan.tagline}
-                        onChange={(e) => handlePlanTaglineChange(plan.id, e.target.value)}
-                        placeholder="Offer tagline displayed to students"
-                        className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-hidden focus:border-[#796AEF] focus:bg-white text-slate-800 transition-all"
-                      />
-                    </div>
-
-                    {/* Editable Numbers Grid (Amount & Validity) */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                      {/* Section 1: Amount & Pricing */}
-                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                            <IndianRupee className="w-3 h-3 text-[#796AEF]" />
-                            <span>Pricing (Amount ₹)</span>
-                          </span>
-                          <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-md">
-                            {plan.discountPercent}% OFF
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[10px] font-medium text-slate-500 block mb-1">
-                              Offer Price (₹)
-                            </label>
-                            <div className="relative">
-                              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                                ₹
-                              </span>
-                              <input
-                                type="number"
-                                min={0}
-                                value={plan.priceINR}
-                                onChange={(e) =>
-                                  handlePlanPriceChange(plan.id, parseInt(e.target.value) || 0)
-                                }
-                                className="w-full text-xs font-bold pl-6 pr-2 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-[#796AEF] text-slate-900"
-                              />
-                            </div>
-                          </div>
-
-                          <div>
-                            <label className="text-[10px] font-medium text-slate-500 block mb-1">
-                              Original MRP (₹)
-                            </label>
-                            <div className="relative">
-                              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                                ₹
-                              </span>
-                              <input
-                                type="number"
-                                min={0}
-                                value={plan.originalPriceINR}
-                                onChange={(e) =>
-                                  handlePlanOriginalPriceChange(
-                                    plan.id,
-                                    parseInt(e.target.value) || 0
-                                  )
-                                }
-                                className="w-full text-xs pl-6 pr-2 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-[#796AEF] text-slate-500 line-through"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Section 2: Validity & Duration */}
-                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2.5">
-                        <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                          <Calendar className="w-3 h-3 text-[#796AEF]" />
-                          <span>Validity & Duration</span>
-                        </span>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[10px] font-medium text-slate-500 block mb-1">
-                              Months (अवधि)
-                            </label>
-                            <input
-                              type="number"
-                              min={1}
-                              max={60}
-                              value={plan.durationMonths}
-                              onChange={(e) =>
-                                handlePlanDurationChange(plan.id, parseInt(e.target.value) || 1)
-                              }
-                              className="w-full text-xs font-bold px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-[#796AEF] text-slate-900"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="text-[10px] font-medium text-slate-500 block mb-1">
-                              Duration Label
-                            </label>
-                            <input
-                              type="text"
-                              value={plan.durationLabel}
-                              onChange={(e) => handlePlanLabelChange(plan.id, e.target.value)}
-                              placeholder="e.g. 6 Months"
-                              className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:border-[#796AEF] text-slate-800"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Student Checkout Live Preview Pill */}
-                    <div className="p-2.5 bg-indigo-50/70 border border-indigo-100 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs">
-                      <div className="flex items-center gap-1.5 text-[#796AEF]">
-                        <Eye className="w-3.5 h-3.5 shrink-0" />
-                        <span className="text-[11px] font-bold">Student Checkout Preview:</span>
-                      </div>
-                      <div className="flex items-center gap-2 font-semibold text-slate-800 text-xs">
-                        <span className="text-[#796AEF] font-black text-sm">₹{plan.priceINR}</span>
-                        <span className="text-slate-400 text-[11px]">for {plan.durationLabel}</span>
-                        <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded">
-                          {plan.discountPercent}% OFF
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Feature Chips */}
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        Included Student Features ({plan.features.length})
-                      </span>
-                      <div className="flex flex-wrap gap-1">
-                        {plan.features.slice(0, 3).map((feat, fi) => (
-                          <span
-                            key={fi}
-                            className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-medium truncate max-w-xs"
-                          >
-                            ✓ {feat}
-                          </span>
-                        ))}
-                        {plan.features.length > 3 && (
-                          <span className="px-2 py-0.5 bg-slate-100 text-slate-400 rounded-md text-[10px] font-medium">
-                            +{plan.features.length - 3} more
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Bottom Floating Save Action Bar */}
-            <div className="p-3.5 bg-white rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between gap-3 sticky bottom-3 z-10">
-              <div className="text-xs">
-                <span className="font-bold text-slate-800">{plans.length} Tiers Configured</span>
-                <p className="text-[10px] text-slate-400">
-                  {hasPlanChanges ? "Changes pending save" : "All plans synced"}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleResetPlans}
-                  className="h-10 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold text-xs transition-colors cursor-pointer"
-                >
-                  Reset Defaults
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveAllPlans}
-                  disabled={isSavingPlans}
-                  className="h-10 px-5 rounded-xl bg-[#796AEF] hover:bg-indigo-700 active:scale-95 text-white font-bold text-xs shadow-md transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <Save className="w-4 h-4" />
-                  <span>{isSavingPlans ? "Saving..." : "Save Pricing & Validity"}</span>
-                </button>
-              </div>
-            </div>
+            {/* Unified Plan Manager: Add, Edit, Delete & Sync Engine */}
+            <AdminUnifiedPlanManager
+              plans={plans}
+              onPlansChange={(newPlans) => {
+                setPlans(newPlans);
+                setHasPlanChanges(true);
+              }}
+              onSaveAllPlans={handleSaveAllPlans}
+              onResetPlans={handleResetPlans}
+              isSaving={isSavingPlans}
+              hasChanges={hasPlanChanges}
+              onToast={onToast}
+            />
           </div>
         )}
 
@@ -3311,7 +3094,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     setSelectedStudentForModal(null);
                     setManagingSubStudent(std);
                     if (std.subscriptionStatus === "pending_verification") {
-                      setSelectedPlanForApproval("semiannual_149");
+                      setSelectedPlanForApproval(std.planId || plans[0]?.id || "semiannual_149");
                       setApprovalNotesInput(`Approved UTR: ${std.utrNumber || "Verified"}`);
                     }
                   }}
@@ -3493,7 +3276,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 >
                   {plans.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.tag}) — ₹{p.priceINR} / {p.durationMonths} Mo
+                      {p.name} ({p.durationLabel || `${p.durationMonths} Mo`}) — ₹{p.priceINR}
                     </option>
                   ))}
                 </select>
@@ -3635,6 +3418,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         mode={payoutModalMode}
         onApprove={handleApprovePayout}
         onReject={handleRejectPayout}
+        onToast={onToast}
+      />
+
+      {/* DIRECT MANUAL STUDENT ONBOARDING & PROVISIONING MODAL */}
+      <AdminManualOnboardModal
+        isOpen={showManualOnboardModal}
+        onClose={() => setShowManualOnboardModal(false)}
+        adminEmail={currentUser?.email || "Admin"}
+        onSuccess={(name, plan) => {
+          setStudentSubscriptions(getStudentSubscriptions());
+          fetchStudents(false);
+          onToast?.(`🎉 ${name} successfully registered with Pro (${plan})!`, "success");
+        }}
         onToast={onToast}
       />
     </div>

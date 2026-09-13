@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { Mic, MicOff, Power, Sparkles, ExternalLink, RefreshCw, Volume2, Info, Palette, HelpCircle, Flame, Trash2, Terminal, GraduationCap, BookOpen, Upload, FileText, User, ArrowLeft, CheckCircle, ChevronRight, LogOut, Download, Library, Youtube, Video, Brain, XCircle, Maximize2, Minimize2, Home, Gauge, Pause, Play, FlaskConical, Headphones, ShieldCheck } from "lucide-react";
+import { Mic, MicOff, Power, Sparkles, ExternalLink, RefreshCw, Volume2, Info, Palette, HelpCircle, Flame, Trash2, Terminal, GraduationCap, BookOpen, Upload, FileText, User, ArrowLeft, CheckCircle, ChevronRight, LogOut, Download, Library, Youtube, Video, Brain, XCircle, Maximize2, Minimize2, Home, Gauge, Pause, Play, FlaskConical, Headphones, ShieldCheck, Smartphone, ArrowRight } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { useLiveSession } from "./hooks/useLiveSession";
 import { toJpeg } from "html-to-image";
@@ -35,7 +35,7 @@ import { triggerCelebrationConfetti } from "./utils/confetti";
 import { smartMergeWhiteboardNotes } from "./utils/boardFilter";
 import { safeSavePastSessions, safeSetItem } from "./utils/safeStorage";
 import { saveActiveLearningContext } from "./utils/activeLearningStore";
-import { loadSubscriptionState, SubscriptionState } from "./utils/subscriptionStore";
+import { loadSubscriptionState, SubscriptionState, syncSubscriptionSettingsFromCloud, matchProvisionedStudent } from "./utils/subscriptionStore";
 import { getActiveApiKey } from "./utils/geminiKeyStorage";
 import { isAdminEmail, getUserRole } from "./utils/adminConfig";
 import AdminDashboard from "./components/AdminDashboard";
@@ -153,6 +153,9 @@ export default function App() {
   const [showStudentAccountHub, setShowStudentAccountHub] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginModalPhone, setLoginModalPhone] = useState("");
+  const [isVerifyingModalPhone, setIsVerifyingModalPhone] = useState(false);
+  const [showPhoneInLoginModal, setShowPhoneInLoginModal] = useState(false);
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
 
   // Document-driven teaching system states
@@ -258,6 +261,9 @@ export default function App() {
 
   // Real-time synchronization for Student Subscription & Pro Access (Admin ↔ Student)
   useEffect(() => {
+    // Initial sync of subscription settings and dynamic plans from cloud
+    syncSubscriptionSettingsFromCloud().catch(() => {});
+
     const handleSubscriptionUpdated = (e: any) => {
       const newState: SubscriptionState = e?.detail || loadSubscriptionState();
       setSubscriptionState(newState);
@@ -710,18 +716,37 @@ export default function App() {
             addToast(`Cloud profile restored for ${data.name}! ☁️✨`, "success");
             setShowLoginModal(false);
           } else {
-            if (activeUser.displayName) {
-              setStudentDetails((prev) => ({
-                ...prev,
-                name: activeUser.displayName || prev.name,
-                board: "CBSE",
-                mediumOfLearning: "Hinglish"
-              }));
-            }
-            // Trigger onboarding flow for first-time Google sign-ins (ignores anonymous guest users & admin users)
-            if (!activeUser.isAnonymous && !userIsAdmin) {
-              setShowOnboarding(true);
+            // Check if this student was manually onboarded / provisioned by Admin
+            const matchedProvision = await matchProvisionedStudent({
+              uid: activeUser.uid,
+              email: activeUser.email || undefined,
+              phone: (activeUser as any).phoneNumber || undefined,
+              displayName: activeUser.displayName || undefined,
+            });
+
+            if (matchedProvision && matchedProvision.profileData && matchedProvision.subscription) {
+              setStudentDetails(matchedProvision.profileData);
+              localStorage.setItem(`studentProfile_${activeUser.uid}`, JSON.stringify(matchedProvision.profileData));
+              setSubscriptionState(loadSubscriptionState());
+              setShowOnboarding(false);
               setShowLoginModal(false);
+              setShowEnrollmentScreen(false);
+              setShowIntroWalkthrough(false);
+              addToast(`🎉 Welcome ${matchedProvision.profileData.name}! Your ${matchedProvision.subscription.planName} Pro Access is Active!`, "success");
+            } else {
+              if (activeUser.displayName) {
+                setStudentDetails((prev) => ({
+                  ...prev,
+                  name: activeUser.displayName || prev.name,
+                  board: "CBSE",
+                  mediumOfLearning: "Hinglish"
+                }));
+              }
+              // Trigger onboarding flow for first-time Google sign-ins (ignores anonymous guest users & admin users)
+              if (!activeUser.isAnonymous && !userIsAdmin) {
+                setShowOnboarding(true);
+                setShowLoginModal(false);
+              }
             }
           }
           loadPastSessions(activeUser.uid).catch((err) => {
@@ -3847,6 +3872,104 @@ MANDATORY PHASE 1 ('intro') EXECUTION:
                     </svg>
                     <span>Login with Google Account</span>
                   </button>
+
+                  {/* Admin Enrolled Student Direct Mobile Verification */}
+                  <div className="pt-1 space-y-2">
+                    {!showPhoneInLoginModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowPhoneInLoginModal(true)}
+                        className="w-full py-2.5 px-3 rounded-xl bg-indigo-50/80 hover:bg-indigo-100/80 text-[#796AEF] border border-indigo-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                      >
+                        <Smartphone className="w-4 h-4 text-[#796AEF]" />
+                        <span>Enrolled by Admin? Login with Mobile Number</span>
+                      </button>
+                    ) : (
+                      <div className="p-3 bg-indigo-50/40 rounded-xl border border-indigo-200/80 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-bold text-slate-800 flex items-center gap-1.5">
+                            <Smartphone className="w-3.5 h-3.5 text-[#796AEF]" />
+                            <span>Enter Registered 10-digit Mobile</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setShowPhoneInLoginModal(false)}
+                            className="text-[10px] font-bold text-slate-400 hover:text-slate-600"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                              +91
+                            </span>
+                            <input
+                              type="tel"
+                              maxLength={10}
+                              value={loginModalPhone}
+                              onChange={(e) => setLoginModalPhone(e.target.value.replace(/\D/g, ""))}
+                              placeholder="9876543210"
+                              className="w-full pl-11 pr-3 py-2 bg-white rounded-lg border border-slate-300 text-xs font-mono font-bold text-slate-800 focus:outline-none focus:border-[#796AEF]"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            disabled={loginModalPhone.length !== 10 || isVerifyingModalPhone}
+                            onClick={async () => {
+                              setIsVerifyingModalPhone(true);
+                              try {
+                                const clean = loginModalPhone.replace(/\D/g, "");
+                                const matched = await matchProvisionedStudent({ phone: clean });
+                                if (matched && matched.profileData && matched.subscription) {
+                                  const studentUser = {
+                                    uid: matched.subscription.id,
+                                    displayName: matched.profileData.name,
+                                    email: matched.subscription.studentEmail || `student_${clean}@cherry.ai`,
+                                    phoneNumber: clean,
+                                    isAnonymous: false,
+                                    photoURL: null,
+                                  };
+                                  try {
+                                    localStorage.setItem("local_active_user", JSON.stringify(studentUser));
+                                    localStorage.setItem(`studentProfile_${studentUser.uid}`, JSON.stringify(matched.profileData));
+                                  } catch (_) {}
+                                  setUser(studentUser as any);
+                                  setStudentDetails(matched.profileData);
+                                  setSubscriptionState(loadSubscriptionState());
+                                  setShowLoginModal(false);
+                                  setShowEnrollmentScreen(false);
+                                  setShowOnboarding(false);
+                                  setCurrentScreen("classroom");
+                                  addToast(`🎉 Welcome ${matched.profileData.name}! Your ${matched.subscription.planName} Pro Access is Active!`, "success");
+                                } else {
+                                  addToast(`No pre-enrolled Pro subscription found for ${clean}. Please register as guest or with Google.`, "info");
+                                }
+                              } catch (err) {
+                                console.error("Verification error:", err);
+                                addToast("Failed to verify subscription. Please try again.", "error");
+                              } finally {
+                                setIsVerifyingModalPhone(false);
+                              }
+                            }}
+                            className="px-3.5 py-2 bg-[#796AEF] hover:bg-[#6858e0] disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                          >
+                            {isVerifyingModalPhone ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <>
+                                <span>Verify</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          Directly accesses your pre-activated Pro syllabus & AI tutor.
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="relative flex py-1 items-center">

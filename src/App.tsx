@@ -451,8 +451,16 @@ export default function App() {
 
     fetchWithRetry();
 
+    const handleOpenPlans = () => {
+      setShowEnrollmentScreen(true);
+      setShowStudentAccountHub(false);
+    };
+
+    window.addEventListener("cherry_open_subscription_plans", handleOpenPlans);
+
     return () => {
       active = false;
+      window.removeEventListener("cherry_open_subscription_plans", handleOpenPlans);
     };
   }, []);
 

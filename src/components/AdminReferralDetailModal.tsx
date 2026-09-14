@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   X,
   Copy,
@@ -21,7 +21,9 @@ import {
   ShieldAlert,
   Snowflake,
   PlusCircle,
-  Lock
+  Lock,
+  Zap,
+  Crown
 } from "lucide-react";
 import {
   StudentReferralSummary,
@@ -31,6 +33,12 @@ import {
   toggleStudentReferralStatus,
   REFERRAL_5_LEVEL_CONFIG,
   getReferralCommissionConfig,
+  getReferrerActivePlanTier,
+  assignStudentSubscriptionTier,
+  PLAN_REFERRAL_TIERS,
+  PlanReferralTier,
+  getPlanReferralTiers,
+  ReferralCommissionConfig,
 } from "../utils/referralStore";
 import { AdminWalletAdjustmentModal } from "./AdminWalletAdjustmentModal";
 import { AdminFraudControlModal } from "./AdminFraudControlModal";
@@ -58,10 +66,43 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
 }) => {
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
-  const commissionConfig = getReferralCommissionConfig();
+  const [commissionConfig, setCommissionConfig] = useState<ReferralCommissionConfig>(() =>
+    getReferralCommissionConfig()
+  );
   const [activeTab, setActiveTab] = useState<"network" | "activities" | "withdrawals">("network");
   const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
   const [showFraudModal, setShowFraudModal] = useState(false);
+  const [currentTierMonths, setCurrentTierMonths] = useState<number>(() => {
+    if (!summary) return 1;
+    const acct = loadReferralState(summary.studentName, summary.studentId);
+    return acct.planTierMonths || 1;
+  });
+
+  // Listen for real-time commission config / tier updates
+  useEffect(() => {
+    const handleConfigUpdate = (e: any) => {
+      if (e?.detail) {
+        setCommissionConfig(e.detail);
+      } else {
+        setCommissionConfig(getReferralCommissionConfig());
+      }
+    };
+    window.addEventListener("cherry_commission_config_updated", handleConfigUpdate);
+    return () => window.removeEventListener("cherry_commission_config_updated", handleConfigUpdate);
+  }, []);
+
+  const availablePlanTiers = useMemo(
+    () => getPlanReferralTiers(commissionConfig),
+    [commissionConfig]
+  );
+
+  // Re-sync tier when summary changes
+  useEffect(() => {
+    if (summary) {
+      const acct = loadReferralState(summary.studentName, summary.studentId);
+      setCurrentTierMonths(acct.planTierMonths || 1);
+    }
+  }, [summary]);
 
   if (!isOpen || !summary) return null;
 
@@ -69,6 +110,7 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
   const isFrozen = fullAccount.isFrozen ?? summary.isFrozen ?? false;
   const fraudFlags = fullAccount.fraudFlags || summary.fraudFlags || [];
   const referralLink = `${window.location.origin}?ref=${summary.referralCode}`;
+  const activePlanTier = getReferrerActivePlanTier(summary.studentId, commissionConfig);
 
   const handleCopyCode = () => {
     navigator.clipboard?.writeText(summary.referralCode);
@@ -82,6 +124,15 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
     onToast?.("Copied Referral Invite Link 🔗", "info");
+  };
+
+  const handleTierChange = (months: number) => {
+    const result = assignStudentSubscriptionTier(summary.studentId, summary.studentName, months);
+    if (result.success) {
+      setCurrentTierMonths(months);
+      onToast?.(result.message, "success");
+      onStatusChange?.(summary.studentId, summary.status);
+    }
   };
 
   const handleToggleAccountStatus = () => {
@@ -218,6 +269,70 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
               </button>
             </div>
           </div>
+
+          {/* Phase 3: Student Subscription Tier & Dynamic Commission Multiplier */}
+          <div className="p-3.5 bg-gradient-to-br from-indigo-50/70 via-white to-purple-50/50 border border-indigo-200/80 rounded-2xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Crown className="w-4 h-4 text-amber-500" />
+                <span className="text-xs font-bold text-slate-900">Subscription Tier & Commission Rates</span>
+              </div>
+              <span className="px-2 py-0.5 rounded-md bg-indigo-100 text-[#796AEF] text-[10px] font-black uppercase tracking-wider">
+                {activePlanTier.badge} {activePlanTier.label}
+              </span>
+            </div>
+
+            {/* Current Rates Bar */}
+            <div className="p-2 bg-white/90 border border-indigo-100 rounded-xl flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1">
+                <span className="text-slate-500 text-[11px]">Direct (L1):</span>
+                <span className="font-mono font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+                  {activePlanTier.level1Percent}%
+                </span>
+              </div>
+              <div className="h-3 w-px bg-slate-200" />
+              <div className="flex items-center gap-1">
+                <span className="text-slate-500 text-[11px]">5th Level Team (L5):</span>
+                <span className="font-mono font-black text-[#796AEF] bg-indigo-50 px-1.5 py-0.5 rounded">
+                  {activePlanTier.level5Percent}%
+                </span>
+              </div>
+            </div>
+
+            {/* Quick Tier Assignment Buttons */}
+            <div>
+              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                <span>Assign Active Plan Tier:</span>
+                <span className="text-[10px] text-indigo-600 font-semibold">Instant Multiplier</span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {availablePlanTiers.map((tier) => {
+                  const isSelected = (currentTierMonths || 1) === tier.durationMonths;
+                  return (
+                    <button
+                      key={tier.tierId}
+                      type="button"
+                      onClick={() => handleTierChange(tier.durationMonths)}
+                      className={`p-1.5 rounded-xl border text-center transition-all cursor-pointer ${
+                        isSelected
+                          ? "bg-[#796AEF] text-white border-[#796AEF] shadow-xs font-bold"
+                          : "bg-white hover:bg-indigo-50/50 text-slate-700 border-slate-200"
+                      }`}
+                    >
+                      <div className="text-[11px] font-black leading-tight">{tier.label}</div>
+                      <div className={`text-[9px] font-mono mt-0.5 ${isSelected ? "text-indigo-100" : "text-emerald-600 font-bold"}`}>
+                        L1: {tier.level1Percent}%
+                      </div>
+                      <div className={`text-[8.5px] font-mono ${isSelected ? "text-indigo-200" : "text-slate-400"}`}>
+                        L5: {tier.level5Percent}%
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
 
           {/* 3 Metric Summary Badges */}
           <div className="grid grid-cols-3 gap-2">
@@ -407,8 +522,24 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
                           L{act.level}
                         </span>
                         <div>
-                          <div className="text-xs font-bold text-slate-900">{act.name}</div>
-                          <div className="text-[10px] text-slate-500">{act.date}</div>
+                          <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                            <span>{act.name}</span>
+                            {act.tierLabel && (
+                              <span className="px-1.5 py-0.2 bg-purple-100 text-purple-800 rounded text-[8.5px] font-bold">
+                                {act.tierLabel}
+                              </span>
+                            )}
+                            {act.appliedPercent && (
+                              <span className="px-1.5 py-0.2 bg-emerald-100 text-emerald-800 rounded text-[8.5px] font-mono font-bold">
+                                {act.appliedPercent}% Comm.
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            {act.date}
+                            {act.planName && ` • Plan: ${act.planName}`}
+                            {act.planPriceINR && ` (₹${act.planPriceINR})`}
+                          </div>
                         </div>
                       </div>
                       <div className="text-right">

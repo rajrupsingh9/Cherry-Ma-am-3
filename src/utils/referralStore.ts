@@ -7,13 +7,73 @@
 import { db } from "../lib/firebase";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 
+export interface PlanReferralTier {
+  durationMonths: number; // 1 | 3 | 6 | 12
+  tierId: "tier_1m" | "tier_3m" | "tier_6m" | "tier_12m";
+  label: string; // "1 Month", "3 Months", "6 Months", "12 Months (VIP)"
+  planName: string;
+  badge: string;
+  level1Percent: number; // 22, 27, 32, 37
+  level5Percent: number; // 15, 20, 25, 30
+  totalPercent: number; // 37, 47, 57, 67 (Max Cap)
+  isMaxVip?: boolean;
+}
+
+export const DEFAULT_PLAN_REFERRAL_TIERS: PlanReferralTier[] = [
+  {
+    durationMonths: 1,
+    tierId: "tier_1m",
+    label: "1 Month Plan",
+    planName: "Monthly Pro Pass",
+    badge: "Starter Tier",
+    level1Percent: 22,
+    level5Percent: 15,
+    totalPercent: 37,
+  },
+  {
+    durationMonths: 3,
+    tierId: "tier_3m",
+    label: "3 Months Plan",
+    planName: "Exam Booster Special",
+    badge: "Booster Tier",
+    level1Percent: 27,
+    level5Percent: 20,
+    totalPercent: 47,
+  },
+  {
+    durationMonths: 6,
+    tierId: "tier_6m",
+    label: "6 Months Special Pass",
+    planName: "6 Months Special Pass",
+    badge: "Pro Scholar Tier",
+    level1Percent: 32,
+    level5Percent: 25,
+    totalPercent: 57,
+  },
+  {
+    durationMonths: 12,
+    tierId: "tier_12m",
+    label: "12 Months Master Pro",
+    planName: "Annual All-Access Master",
+    badge: "VIP Master Ambassador",
+    level1Percent: 37,
+    level5Percent: 30,
+    totalPercent: 67,
+    isMaxVip: true,
+  },
+];
+
+export const PLAN_REFERRAL_TIERS = DEFAULT_PLAN_REFERRAL_TIERS;
+
 export interface ReferralCommissionConfig {
-  level1Reward: number; // Direct Income (Default: Rs. 50)
+  level1Reward: number; // Direct Income fallback (Default: Rs. 50)
   level2Reward: number; // Bridge (Default: Rs. 0)
   level3Reward: number; // Bridge (Default: Rs. 0)
   level4Reward: number; // Bridge (Default: Rs. 0)
-  level5Reward: number; // Indirect Income (Default: Rs. 50)
+  level5Reward: number; // Indirect Income fallback (Default: Rs. 50)
   minWithdrawalLimit: number; // Default: Rs. 50
+  mode?: "percentage" | "flat"; // Default: "percentage"
+  planTiers?: PlanReferralTier[];
   promoTagline?: string;
   updatedAt?: string;
   updatedBy?: string;
@@ -26,13 +86,70 @@ export const DEFAULT_REFERRAL_COMMISSION_CONFIG: ReferralCommissionConfig = {
   level4Reward: 0,
   level5Reward: 50,
   minWithdrawalLimit: 50,
-  promoTagline: "Earn flat rewards on every friend and network tier invite!",
+  mode: "percentage",
+  planTiers: DEFAULT_PLAN_REFERRAL_TIERS,
+  promoTagline: "Refer & Earn: Up to 37% Direct + 30% Team Royalty (Max 67%) on 12-Month Plan!",
   updatedAt: "System Default",
   updatedBy: "Admin",
 };
 
 export const REFERRAL_COMMISSION_CONFIG_STORAGE_KEY = "cherry_referral_commission_config_v1";
 const CLOUD_CONFIG_DOC_PATH = "systemSettings/referralConfig";
+
+export interface PlanTierValidationResult {
+  isValid: boolean;
+  errors: string[];
+  sanitizedTiers?: PlanReferralTier[];
+}
+
+/**
+ * Validates plan referral tiers ensuring safe margins, valid positive percentages and non-exceeding caps
+ */
+export function validatePlanReferralTiers(tiers: PlanReferralTier[]): PlanTierValidationResult {
+  const errors: string[] = [];
+  if (!Array.isArray(tiers) || tiers.length !== 4) {
+    return { isValid: false, errors: ["Exact 4 plan tiers (1M, 3M, 6M, 12M) are required."] };
+  }
+
+  const expectedMonths = [1, 3, 6, 12];
+  const sanitizedTiers: PlanReferralTier[] = [];
+
+  for (let i = 0; i < tiers.length; i++) {
+    const t = tiers[i];
+    const duration = expectedMonths[i] || t.durationMonths;
+    const l1 = Number(t.level1Percent);
+    const l5 = Number(t.level5Percent);
+
+    if (isNaN(l1) || l1 < 0 || l1 > 70) {
+      errors.push(`${t.label || `${duration}M`}: Level 1 % must be between 0% and 70%.`);
+    }
+    if (isNaN(l5) || l5 < 0 || l5 > 50) {
+      errors.push(`${t.label || `${duration}M`}: Level 5 % must be between 0% and 50%.`);
+    }
+
+    const total = l1 + l5;
+    if (total > 85) {
+      errors.push(
+        `${t.label || `${duration}M`}: Combined Cap (${total}%) exceeds safe platform sustainability limit of 85%.`
+      );
+    }
+
+    sanitizedTiers.push({
+      ...t,
+      durationMonths: duration,
+      level1Percent: Math.round(l1),
+      level5Percent: Math.round(l5),
+      totalPercent: Math.round(total),
+      isMaxVip: duration === 12,
+    });
+  }
+
+  if (errors.length > 0) {
+    return { isValid: false, errors };
+  }
+
+  return { isValid: true, errors: [], sanitizedTiers };
+}
 
 /**
  * Loads current commission configuration (Admin custom or defaults)
@@ -46,9 +163,14 @@ export function getReferralCommissionConfig(): ReferralCommissionConfig {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed.level1Reward === "number" && typeof parsed.level5Reward === "number") {
+        const mergedTiers =
+          Array.isArray(parsed.planTiers) && parsed.planTiers.length === 4
+            ? parsed.planTiers
+            : DEFAULT_PLAN_REFERRAL_TIERS;
         return {
           ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
           ...parsed,
+          planTiers: mergedTiers,
         };
       }
     }
@@ -56,6 +178,60 @@ export function getReferralCommissionConfig(): ReferralCommissionConfig {
     console.warn("Failed to load local referral commission config:", e);
   }
   return DEFAULT_REFERRAL_COMMISSION_CONFIG;
+}
+
+/**
+ * Retrieves the active 4 plan referral tiers from config or local storage
+ */
+export function getPlanReferralTiers(config?: ReferralCommissionConfig): PlanReferralTier[] {
+  const current = config || getReferralCommissionConfig();
+  if (Array.isArray(current.planTiers) && current.planTiers.length === 4) {
+    return current.planTiers;
+  }
+  return DEFAULT_PLAN_REFERRAL_TIERS;
+}
+
+/**
+ * Updates plan referral tier multipliers in config and persists to LocalStorage & dispatches events
+ */
+export function updatePlanReferralTiers(newTiers: PlanReferralTier[]): {
+  success: boolean;
+  message: string;
+  config: ReferralCommissionConfig;
+} {
+  const validation = validatePlanReferralTiers(newTiers);
+  if (!validation.isValid || !validation.sanitizedTiers) {
+    return {
+      success: false,
+      message: validation.errors.join(" "),
+      config: getReferralCommissionConfig(),
+    };
+  }
+
+  const current = getReferralCommissionConfig();
+  const vipTier =
+    validation.sanitizedTiers.find((t) => t.durationMonths === 12) || validation.sanitizedTiers[3];
+
+  const updated: ReferralCommissionConfig = {
+    ...current,
+    planTiers: validation.sanitizedTiers,
+    promoTagline: `Refer & Earn: Up to ${vipTier.level1Percent}% Direct + ${vipTier.level5Percent}% Team Royalty (Max ${vipTier.totalPercent}%) on 12-Month Plan!`,
+    updatedAt: new Date().toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+    updatedBy: "Admin",
+  };
+
+  saveReferralCommissionConfig(updated);
+  return {
+    success: true,
+    message: "Plan tier multipliers updated and saved successfully! 🚀",
+    config: updated,
+  };
 }
 
 /**
@@ -67,6 +243,10 @@ export function saveReferralCommissionConfig(config: ReferralCommissionConfig): 
     const normalized: ReferralCommissionConfig = {
       ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
       ...config,
+      planTiers:
+        Array.isArray(config.planTiers) && config.planTiers.length === 4
+          ? config.planTiers
+          : DEFAULT_PLAN_REFERRAL_TIERS,
       updatedAt: new Date().toLocaleDateString("en-IN", {
         day: "numeric",
         month: "short",
@@ -95,9 +275,14 @@ export async function syncCommissionConfigFromCloud(): Promise<{
     const snapshot = await getDoc(docRef);
     if (snapshot.exists()) {
       const cloudData = snapshot.data() as Partial<ReferralCommissionConfig>;
+      const mergedTiers =
+        Array.isArray(cloudData.planTiers) && cloudData.planTiers.length === 4
+          ? cloudData.planTiers
+          : DEFAULT_PLAN_REFERRAL_TIERS;
       const merged: ReferralCommissionConfig = {
         ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
         ...cloudData,
+        planTiers: mergedTiers,
       };
       saveReferralCommissionConfig(merged);
       return {
@@ -154,6 +339,8 @@ export interface ReferralTierConfig {
   label: string;
   type: "direct" | "bridge" | "indirect";
   incomePerMember: number;
+  rateLabel?: string;
+  percentage?: number;
   description: string;
   badgeColor: string;
 }
@@ -164,7 +351,9 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
     label: "1st Level (Direct)",
     type: "direct",
     incomePerMember: 50,
-    description: "Aapke direct link / code se join hone wale har student par flat reward.",
+    rateLabel: "22% / student",
+    percentage: 22,
+    description: "Aapke direct link / code se join hone wale har student par 22% plan reward.",
     badgeColor: "from-emerald-500 to-teal-600",
   },
   {
@@ -172,6 +361,8 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
     label: "2nd Level",
     type: "bridge",
     incomePerMember: 0,
+    rateLabel: "₹0 / student",
+    percentage: 0,
     description: "Bridge tier network progression (₹0 payout).",
     badgeColor: "from-slate-400 to-slate-500",
   },
@@ -180,6 +371,8 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
     label: "3rd Level",
     type: "bridge",
     incomePerMember: 0,
+    rateLabel: "₹0 / student",
+    percentage: 0,
     description: "Bridge tier network progression (₹0 payout).",
     badgeColor: "from-slate-400 to-slate-500",
   },
@@ -188,6 +381,8 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
     label: "4th Level",
     type: "bridge",
     incomePerMember: 0,
+    rateLabel: "₹0 / student",
+    percentage: 0,
     description: "Bridge tier network progression (₹0 payout).",
     badgeColor: "from-slate-400 to-slate-500",
   },
@@ -196,7 +391,9 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
     label: "5th Level (Indirect)",
     type: "indirect",
     incomePerMember: 50,
-    description: "Level 4 team ke naye invites se milne wali Indirect Income.",
+    rateLabel: "15% / student",
+    percentage: 15,
+    description: "Level 4 team ke naye invites par 15% Team Royalty bonus.",
     badgeColor: "from-indigo-600 to-purple-600",
   },
 ];
@@ -204,15 +401,23 @@ export const REFERRAL_5_LEVEL_CONFIG: ReferralTierConfig[] = [
 /**
  * Returns dynamic 5-tier config based on current admin commission configuration
  */
-export function getDynamicTierConfig(overrideConfig?: ReferralCommissionConfig): ReferralTierConfig[] {
+export function getDynamicTierConfig(
+  overrideConfig?: ReferralCommissionConfig,
+  activeTier?: PlanReferralTier
+): ReferralTierConfig[] {
   const cfg = overrideConfig || getReferralCommissionConfig();
+  const l1Pct = activeTier?.level1Percent || cfg.planTiers?.[0]?.level1Percent || 22;
+  const l5Pct = activeTier?.level5Percent || cfg.planTiers?.[0]?.level5Percent || 15;
+
   return [
     {
       level: 1,
       label: "1st Level (Direct)",
       type: "direct",
       incomePerMember: cfg.level1Reward,
-      description: `Aapke direct link / code se join hone wale har student par flat ₹${cfg.level1Reward}.`,
+      rateLabel: `${l1Pct}% / student`,
+      percentage: l1Pct,
+      description: `Aapke direct link / code se join hone wale har student par ${l1Pct}% plan reward.`,
       badgeColor: "from-emerald-500 to-teal-600",
     },
     {
@@ -220,6 +425,8 @@ export function getDynamicTierConfig(overrideConfig?: ReferralCommissionConfig):
       label: "2nd Level",
       type: "bridge",
       incomePerMember: cfg.level2Reward,
+      rateLabel: "₹0 / student",
+      percentage: 0,
       description: cfg.level2Reward > 0 ? `Level 2 network member reward flat ₹${cfg.level2Reward}.` : "Bridge tier network progression (₹0 payout).",
       badgeColor: "from-slate-400 to-slate-500",
     },
@@ -228,6 +435,8 @@ export function getDynamicTierConfig(overrideConfig?: ReferralCommissionConfig):
       label: "3rd Level",
       type: "bridge",
       incomePerMember: cfg.level3Reward,
+      rateLabel: "₹0 / student",
+      percentage: 0,
       description: cfg.level3Reward > 0 ? `Level 3 network member reward flat ₹${cfg.level3Reward}.` : "Bridge tier network progression (₹0 payout).",
       badgeColor: "from-slate-400 to-slate-500",
     },
@@ -236,6 +445,8 @@ export function getDynamicTierConfig(overrideConfig?: ReferralCommissionConfig):
       label: "4th Level",
       type: "bridge",
       incomePerMember: cfg.level4Reward,
+      rateLabel: "₹0 / student",
+      percentage: 0,
       description: cfg.level4Reward > 0 ? `Level 4 network member reward flat ₹${cfg.level4Reward}.` : "Bridge tier network progression (₹0 payout).",
       badgeColor: "from-slate-400 to-slate-500",
     },
@@ -244,10 +455,194 @@ export function getDynamicTierConfig(overrideConfig?: ReferralCommissionConfig):
       label: "5th Level (Indirect)",
       type: "indirect",
       incomePerMember: cfg.level5Reward,
-      description: `Level 4 team ke naye invites se milne wali Indirect Income flat ₹${cfg.level5Reward}.`,
+      rateLabel: `${l5Pct}% / student`,
+      percentage: l5Pct,
+      description: `Level 4 team ke naye invites par ${l5Pct}% Team Royalty bonus.`,
       badgeColor: "from-indigo-600 to-purple-600",
     },
   ];
+}
+
+/**
+ * Finds plan referral tier configuration by duration in months
+ */
+export function getPlanReferralTierByDuration(
+  durationMonths: number = 1,
+  config?: ReferralCommissionConfig
+): PlanReferralTier {
+  const tiers = getPlanReferralTiers(config);
+  if (durationMonths >= 12) {
+    return tiers.find((t) => t.durationMonths === 12) || tiers[3] || DEFAULT_PLAN_REFERRAL_TIERS[3];
+  }
+  if (durationMonths >= 6) {
+    return tiers.find((t) => t.durationMonths === 6) || tiers[2] || DEFAULT_PLAN_REFERRAL_TIERS[2];
+  }
+  if (durationMonths >= 3) {
+    return tiers.find((t) => t.durationMonths === 3) || tiers[1] || DEFAULT_PLAN_REFERRAL_TIERS[1];
+  }
+  return tiers.find((t) => t.durationMonths === 1) || tiers[0] || DEFAULT_PLAN_REFERRAL_TIERS[0];
+}
+
+/**
+ * Determines a referrer's active plan tier based on their subscription status
+ */
+export function getReferrerActivePlanTier(
+  referrerIdOrName: string,
+  config?: ReferralCommissionConfig
+): PlanReferralTier {
+  if (typeof window === "undefined" || !referrerIdOrName) {
+    return getPlanReferralTierByDuration(1, config);
+  }
+  try {
+    // 1. Check all registered student subscriptions
+    const subListRaw = localStorage.getItem("cherry_student_subscriptions_v1");
+    if (subListRaw) {
+      const subList = JSON.parse(subListRaw);
+      if (Array.isArray(subList)) {
+        const found = subList.find(
+          (s: any) =>
+            (s.id === referrerIdOrName ||
+              s.studentId === referrerIdOrName ||
+              (s.studentName && s.studentName.toLowerCase() === referrerIdOrName.toLowerCase())) &&
+            (s.status === "active" || s.isPro)
+        );
+        if (found) {
+          const planId = found.planId || "";
+          if (planId === "annual" || planId.includes("12") || found.durationMonths === 12) {
+            return getPlanReferralTierByDuration(12, config);
+          }
+          if (planId === "semiannual_149" || planId.includes("6") || found.durationMonths === 6) {
+            return getPlanReferralTierByDuration(6, config);
+          }
+          if (planId === "quarterly" || planId.includes("3") || found.durationMonths === 3) {
+            return getPlanReferralTierByDuration(3, config);
+          }
+          if (planId === "monthly" || found.durationMonths === 1) {
+            return getPlanReferralTierByDuration(1, config);
+          }
+        }
+      }
+    }
+
+    // 2. Check active student local session subscription
+    const currentSubRaw = localStorage.getItem("cherry_subscription_state_v1");
+    if (currentSubRaw) {
+      const currentSub = JSON.parse(currentSubRaw);
+      if (currentSub?.isPro && currentSub?.activePlanId) {
+        const pid = currentSub.activePlanId;
+        if (pid === "annual" || pid.includes("12")) return getPlanReferralTierByDuration(12, config);
+        if (pid === "semiannual_149" || pid.includes("6")) return getPlanReferralTierByDuration(6, config);
+        if (pid === "quarterly" || pid.includes("3")) return getPlanReferralTierByDuration(3, config);
+        if (pid === "monthly") return getPlanReferralTierByDuration(1, config);
+      }
+    }
+
+    // 3. Check account's saved tier if stored
+    const acc = loadReferralState(referrerIdOrName, referrerIdOrName);
+    if (acc?.planTierMonths) {
+      return getPlanReferralTierByDuration(acc.planTierMonths, config);
+    }
+  } catch (err) {
+    console.warn("getReferrerActivePlanTier check warning:", err);
+  }
+
+  // Base Starter Tier for trial/free student accounts
+  return getPlanReferralTierByDuration(1, config);
+}
+
+export interface CalculatedCommissionResult {
+  planPriceINR: number;
+  planName: string;
+  planDurationMonths: number;
+  referrerTier: PlanReferralTier;
+  level1Percent: number;
+  level1Reward: number;
+  vipTier: PlanReferralTier;
+  maxVipLevel1Reward: number;
+  missedL1Diff: number;
+  canUpgradeForMore: boolean;
+  level5Percent: number;
+  level5Reward: number;
+  totalDistributedPercent: number;
+  companySafeRetentionPercent: number;
+}
+
+/**
+ * Calculates tiered commission for Level 1 and Level 5 based on purchased plan & referrer tiers
+ */
+export function calculateTieredReferralReward(params: {
+  planPriceINR?: number;
+  planDurationMonths?: number;
+  planId?: string;
+  planName?: string;
+  referrerIdOrName?: string;
+  upline5IdOrName?: string;
+  config?: ReferralCommissionConfig;
+}): CalculatedCommissionResult {
+  const config = params.config || getReferralCommissionConfig();
+
+  let price = Number(params.planPriceINR || 0);
+  let durationMonths = Number(params.planDurationMonths || 0);
+  let planName = params.planName || "";
+
+  if (!price || price <= 0 || !durationMonths) {
+    if (params.planId === "annual") {
+      price = 1499;
+      durationMonths = 12;
+      planName = "Annual All-Access Master";
+    } else if (params.planId === "quarterly") {
+      price = 499;
+      durationMonths = 3;
+      planName = "Exam Booster Special";
+    } else if (params.planId === "monthly") {
+      price = 199;
+      durationMonths = 1;
+      planName = "Monthly Pro Pass";
+    } else {
+      price = price > 0 ? price : 149;
+      durationMonths = durationMonths > 0 ? durationMonths : 6;
+      planName = planName || "6 Months Special Pass";
+    }
+  }
+
+  const referrerTier = params.referrerIdOrName
+    ? getReferrerActivePlanTier(params.referrerIdOrName, config)
+    : getPlanReferralTierByDuration(1, config);
+
+  const vipTier = getPlanReferralTierByDuration(12, config); // 37% L1, 30% L5
+
+  const l1Percent = referrerTier.level1Percent; // 22, 27, 32, or 37
+  const l1Reward = Math.max(1, Math.round((price * l1Percent) / 100));
+
+  const maxVipL1Reward = Math.max(1, Math.round((price * vipTier.level1Percent) / 100));
+  const missedDiff = Math.max(0, maxVipL1Reward - l1Reward);
+  const canUpgrade = referrerTier.durationMonths < 12;
+
+  const uplineTier = params.upline5IdOrName
+    ? getReferrerActivePlanTier(params.upline5IdOrName, config)
+    : referrerTier;
+  const l5Percent = uplineTier.level5Percent; // 15, 20, 25, or 30
+  const l5Reward = Math.max(1, Math.round((price * l5Percent) / 100));
+
+  const totalDist = l1Percent + l5Percent;
+  const companyRetention = 100 - totalDist;
+
+  return {
+    planPriceINR: price,
+    planName,
+    planDurationMonths: durationMonths,
+    referrerTier,
+    level1Percent: l1Percent,
+    level1Reward: l1Reward,
+    vipTier,
+    maxVipLevel1Reward: maxVipL1Reward,
+    missedL1Diff: missedDiff,
+    canUpgradeForMore: canUpgrade,
+    level5Percent: l5Percent,
+    level5Reward: l5Reward,
+    totalDistributedPercent: totalDist,
+    companySafeRetentionPercent: companyRetention,
+  };
 }
 
 export interface ReferralActivity {
@@ -257,6 +652,11 @@ export interface ReferralActivity {
   amount: number;
   date: string;
   status: "credited" | "pending";
+  planName?: string;
+  planPriceINR?: number;
+  appliedPercent?: number;
+  tierLabel?: string;
+  missedDiff?: number;
 }
 
 export interface WithdrawalRecord {
@@ -298,6 +698,21 @@ export interface ReferralAccountState {
   fraudFlags?: FraudFlag[];
   joinedWithCode?: string;
   joinedReferrerName?: string;
+  planTierMonths?: number;
+  planTierName?: string;
+  activeRatePercentL1?: number;
+  activeRatePercentL5?: number;
+  lastMissedEarning?: {
+    newStudentName: string;
+    planName: string;
+    planPriceINR: number;
+    earnedINR: number;
+    vipCouldEarnINR: number;
+    missedDiffINR: number;
+    currentTierLabel: string;
+    timestamp: string;
+    isAcknowledged?: boolean;
+  };
 }
 
 export interface StudentReferralSummary {
@@ -324,6 +739,9 @@ export interface StudentReferralSummary {
   freezeReason?: string;
   fraudFlags?: FraudFlag[];
   lastActive?: string;
+  planTierLabel?: string;
+  planTierPercentL1?: number;
+  planTierPercentL5?: number;
 }
 
 export interface ReferralSystemMetrics {
@@ -646,6 +1064,8 @@ export function getAllStudentReferralSummaries(
     const pendingWithdrawals = account.withdrawals.filter(w => w.status === "processing" || w.status === "pending");
     const pendingWithdrawalsAmount = pendingWithdrawals.reduce((sum, w) => sum + (w.amount || 0), 0);
 
+    const tierInfo = getReferrerActivePlanTier(std.id, commissionCfg);
+
     return {
       studentId: std.id,
       studentName: std.name,
@@ -670,6 +1090,9 @@ export function getAllStudentReferralSummaries(
       freezeReason: account.freezeReason,
       fraudFlags: account.fraudFlags || [],
       lastActive: account.activities[0]?.date || "Recently",
+      planTierLabel: tierInfo.label,
+      planTierPercentL1: tierInfo.level1Percent,
+      planTierPercentL5: tierInfo.level5Percent,
     };
   });
 }
@@ -1111,6 +1534,37 @@ export function detectSelfReferralOrFraud(params: {
   return { isFraud: false };
 }
 
+/**
+ * Phase 3: Admin sets or updates a student's active referral earning plan tier
+ */
+export function assignStudentSubscriptionTier(
+  studentId: string,
+  studentName: string,
+  durationMonths: number
+): { success: boolean; tier: PlanReferralTier; message: string } {
+  const config = getReferralCommissionConfig();
+  const tier = getPlanReferralTierByDuration(durationMonths, config);
+  const account = loadReferralState(studentName, studentId);
+
+  account.planTierMonths = durationMonths;
+  account.planTierName = tier.planName;
+  account.activeRatePercentL1 = tier.level1Percent;
+  account.activeRatePercentL5 = tier.level5Percent;
+
+  saveReferralState(account, studentId);
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("cherry_referrals_updated"));
+  }
+
+  return {
+    success: true,
+    tier,
+    message: `Assigned ${studentName} to ${tier.label} (${tier.badge})! Direct: ${tier.level1Percent}%, Team: ${tier.level5Percent}%. 🎯`,
+  };
+}
+
+
 export interface ReferralLookupResult {
   valid: boolean;
   referrerId?: string;
@@ -1118,6 +1572,9 @@ export interface ReferralLookupResult {
   referralCode?: string;
   level1Reward: number;
   level5Reward: number;
+  level1Percent?: number;
+  level5Percent?: number;
+  referrerTierLabel?: string;
   isSelf?: boolean;
   isFrozen?: boolean;
   message: string;
@@ -1137,17 +1594,18 @@ export const KNOWN_STUDENT_CODE_REGISTRY: Record<string, { id: string; name: str
 export function lookupReferralCode(
   rawCode: string,
   currentUserId?: string,
-  currentUserName?: string
+  currentUserName?: string,
+  planOptions?: { priceINR?: number; durationMonths?: number; planId?: string }
 ): ReferralLookupResult {
   const config = getReferralCommissionConfig();
-  const level1Reward = config.level1Reward;
-  const level5Reward = config.level5Reward;
+  const defaultLevel1 = config.level1Reward;
+  const defaultLevel5 = config.level5Reward;
 
   if (!rawCode || !rawCode.trim()) {
     return {
       valid: false,
-      level1Reward,
-      level5Reward,
+      level1Reward: defaultLevel1,
+      level5Reward: defaultLevel5,
       message: "Please enter an invite code.",
     };
   }
@@ -1218,11 +1676,23 @@ export function lookupReferralCode(
   if (!matchedId) {
     return {
       valid: false,
-      level1Reward,
-      level5Reward,
+      level1Reward: defaultLevel1,
+      level5Reward: defaultLevel5,
       message: `Invalid referral code "${code}". Please check and re-enter.`,
     };
   }
+
+  // Calculate dynamic reward based on selected plan and referrer tier
+  const rewardCalc = calculateTieredReferralReward({
+    planPriceINR: planOptions?.priceINR,
+    planDurationMonths: planOptions?.durationMonths,
+    planId: planOptions?.planId,
+    referrerIdOrName: matchedId,
+    config,
+  });
+
+  const level1Reward = rewardCalc.level1Reward || defaultLevel1;
+  const level5Reward = rewardCalc.level5Reward || defaultLevel5;
 
   // Check self-referral
   if (currentUserId && matchedId === currentUserId) {
@@ -1268,7 +1738,10 @@ export function lookupReferralCode(
     referralCode: code,
     level1Reward,
     level5Reward,
-    message: `Invite verified! Invited by ${matchedName} • ₹${level1Reward} Direct Reward Active! 🎉`,
+    level1Percent: rewardCalc.level1Percent,
+    level5Percent: rewardCalc.level5Percent,
+    referrerTierLabel: rewardCalc.referrerTier.label,
+    message: `Invite verified! Invited by ${matchedName} • ${rewardCalc.level1Percent}% (₹${level1Reward}) Direct Reward Active! 🎉`,
   };
 }
 
@@ -1279,6 +1752,10 @@ export interface ReferralDistributionResult {
   referrerName?: string;
   level1RewardCredited?: number;
   level5RewardCredited?: number;
+  appliedPercentL1?: number;
+  missedDiffL1?: number;
+  canUpgradeForMore?: boolean;
+  planName?: string;
   isSelfReferral?: boolean;
 }
 
@@ -1292,6 +1769,10 @@ export async function distributeAndCreditReferralCommission(params: {
   newStudentGrade?: string;
   newStudentEmail?: string;
   deviceFingerprint?: string;
+  planPriceINR?: number;
+  planDurationMonths?: number;
+  planId?: string;
+  planName?: string;
 }): Promise<ReferralDistributionResult> {
   const {
     referralCode,
@@ -1300,13 +1781,21 @@ export async function distributeAndCreditReferralCommission(params: {
     newStudentGrade = "Class 10",
     newStudentEmail,
     deviceFingerprint,
+    planPriceINR,
+    planDurationMonths,
+    planId,
+    planName,
   } = params;
 
   if (!referralCode || !referralCode.trim()) {
     return { success: false, message: "No referral code provided." };
   }
 
-  const lookup = lookupReferralCode(referralCode, newStudentId, newStudentName);
+  const lookup = lookupReferralCode(referralCode, newStudentId, newStudentName, {
+    priceINR: planPriceINR,
+    durationMonths: planDurationMonths,
+    planId,
+  });
   if (!lookup.valid || !lookup.referrerId || !lookup.referrerName) {
     return {
       success: false,
@@ -1352,14 +1841,45 @@ export async function distributeAndCreditReferralCommission(params: {
   }
 
   const config = getReferralCommissionConfig();
-  const l1Reward = Number(config.level1Reward ?? 50);
-  const l5Reward = Number(config.level5Reward ?? 50);
+
+  // Dynamic Tiered Reward Calculation for Level 1 Direct Referrer
+  const rewardCalc = calculateTieredReferralReward({
+    planPriceINR,
+    planDurationMonths,
+    planId,
+    planName,
+    referrerIdOrName: lookup.referrerId,
+    config,
+  });
+
+  const l1Reward = rewardCalc.level1Reward;
+  const l1Percent = rewardCalc.level1Percent;
+  const missedDiff = rewardCalc.missedL1Diff;
 
   // 1. Credit Level 1 Direct Income to Referrer
   const referrerAccount = loadReferralState(lookup.referrerName, lookup.referrerId);
   referrerAccount.tierCounts[1] = (referrerAccount.tierCounts[1] || 0) + 1;
   referrerAccount.totalEarned = (referrerAccount.totalEarned || 0) + l1Reward;
   referrerAccount.walletBalance = (referrerAccount.walletBalance || 0) + l1Reward;
+  referrerAccount.planTierMonths = rewardCalc.referrerTier.durationMonths;
+  referrerAccount.planTierName = rewardCalc.referrerTier.label;
+  referrerAccount.activeRatePercentL1 = l1Percent;
+  referrerAccount.activeRatePercentL5 = rewardCalc.level5Percent;
+
+  // Record Missed Earning Trigger if Referrer is on lower tier (< 12 months)
+  if (rewardCalc.canUpgradeForMore && missedDiff > 0) {
+    referrerAccount.lastMissedEarning = {
+      newStudentName,
+      planName: rewardCalc.planName,
+      planPriceINR: rewardCalc.planPriceINR,
+      earnedINR: l1Reward,
+      vipCouldEarnINR: rewardCalc.maxVipLevel1Reward,
+      missedDiffINR: missedDiff,
+      currentTierLabel: rewardCalc.referrerTier.label,
+      timestamp: new Date().toISOString(),
+      isAcknowledged: false,
+    };
+  }
 
   const nowFormatted =
     "Today, " +
@@ -1375,6 +1895,11 @@ export async function distributeAndCreditReferralCommission(params: {
     amount: l1Reward,
     date: nowFormatted,
     status: "credited",
+    planName: rewardCalc.planName,
+    planPriceINR: rewardCalc.planPriceINR,
+    appliedPercent: l1Percent,
+    tierLabel: rewardCalc.referrerTier.label,
+    missedDiff,
   };
 
   referrerAccount.activities = [directActivity, ...(referrerAccount.activities || [])];
@@ -1392,6 +1917,11 @@ export async function distributeAndCreditReferralCommission(params: {
         totalEarned: referrerAccount.totalEarned,
         walletBalance: referrerAccount.walletBalance,
         tierCounts: referrerAccount.tierCounts,
+        planTierMonths: referrerAccount.planTierMonths,
+        planTierName: referrerAccount.planTierName,
+        activeRatePercentL1: referrerAccount.activeRatePercentL1,
+        activeRatePercentL5: referrerAccount.activeRatePercentL5,
+        lastMissedEarning: referrerAccount.lastMissedEarning || null,
         lastReferralAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       },
@@ -1419,21 +1949,38 @@ export async function distributeAndCreditReferralCommission(params: {
         const uplineAcc = loadReferralState("Upline", parentUpline);
         uplineAcc.tierCounts[lvl] = (uplineAcc.tierCounts[lvl] || 0) + 1;
 
-        if (lvl === 5 && l5Reward > 0 && !uplineAcc.isFrozen && uplineAcc.status !== "paused") {
-          uplineAcc.totalEarned = (uplineAcc.totalEarned || 0) + l5Reward;
-          uplineAcc.walletBalance = (uplineAcc.walletBalance || 0) + l5Reward;
-          uplineAcc.activities = [
-            {
-              id: `act_${Date.now()}_l5_${Math.random().toString(36).substring(2, 6)}`,
-              name: `${newStudentName} (5th-Level Network Team)`,
-              level: 5,
-              amount: l5Reward,
-              date: nowFormatted,
-              status: "credited",
-            },
-            ...(uplineAcc.activities || []),
-          ];
-          l5RewardCredited = l5Reward;
+        if (lvl === 5 && !uplineAcc.isFrozen && uplineAcc.status !== "paused") {
+          // Calculate Level 5 reward for this specific upline based on their tier or plan price
+          const uplineRewardCalc = calculateTieredReferralReward({
+            planPriceINR,
+            planDurationMonths,
+            planId,
+            planName,
+            referrerIdOrName: parentUpline,
+            config,
+          });
+          const actualL5Reward = uplineRewardCalc.level5Reward;
+
+          if (actualL5Reward > 0) {
+            uplineAcc.totalEarned = (uplineAcc.totalEarned || 0) + actualL5Reward;
+            uplineAcc.walletBalance = (uplineAcc.walletBalance || 0) + actualL5Reward;
+            uplineAcc.activities = [
+              {
+                id: `act_${Date.now()}_l5_${Math.random().toString(36).substring(2, 6)}`,
+                name: `${newStudentName} (5th-Level Network Team)`,
+                level: 5,
+                amount: actualL5Reward,
+                date: nowFormatted,
+                status: "credited",
+                planName: rewardCalc.planName,
+                planPriceINR: rewardCalc.planPriceINR,
+                appliedPercent: uplineRewardCalc.level5Percent,
+                tierLabel: uplineRewardCalc.referrerTier.label,
+              },
+              ...(uplineAcc.activities || []),
+            ];
+            l5RewardCredited = actualL5Reward;
+          }
         }
 
         saveReferralState(uplineAcc, parentUpline);
@@ -1471,11 +2018,15 @@ export async function distributeAndCreditReferralCommission(params: {
 
   return {
     success: true,
-    message: `🎉 Referral successfully attributed! ₹${l1Reward} credited to ${lookup.referrerName}'s wallet.${l5RewardCredited > 0 ? ` ₹${l5RewardCredited} credited to 5th level network upline.` : ""}`,
+    message: `🎉 Referral attributed! ₹${l1Reward} (${l1Percent}%) credited to ${lookup.referrerName}'s wallet.${l5RewardCredited > 0 ? ` ₹${l5RewardCredited} credited to 5th level network upline.` : ""}`,
     referrerId: lookup.referrerId,
     referrerName: lookup.referrerName,
     level1RewardCredited: l1Reward,
     level5RewardCredited: l5RewardCredited,
+    appliedPercentL1: l1Percent,
+    missedDiffL1: missedDiff,
+    canUpgradeForMore: rewardCalc.canUpgradeForMore,
+    planName: rewardCalc.planName,
   };
 }
 

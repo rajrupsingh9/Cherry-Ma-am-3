@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import QRCode from "qrcode";
 import {
   Share2,
   Copy,
@@ -20,23 +21,39 @@ import {
   QrCode,
   Snowflake,
   AlertTriangle,
+  Crown,
+  ArrowUpRight,
+  Percent,
+  X,
+  Download,
 } from "lucide-react";
 import {
   REFERRAL_5_LEVEL_CONFIG,
   ReferralAccountState,
   loadReferralState,
+  saveReferralState,
   requestWithdrawal,
   getReferralCommissionConfig,
   getDynamicTierConfig,
   ReferralCommissionConfig,
   syncCommissionConfigFromCloud,
+  getReferrerActivePlanTier,
+  calculateTieredReferralReward,
+  PLAN_REFERRAL_TIERS,
+  PlanReferralTier,
+  getPlanReferralTiers,
 } from "../utils/referralStore";
+import {
+  getActiveSubscriptionPlans,
+  SubscriptionPlan,
+} from "../utils/subscriptionStore";
 
 interface ReferAndEarnHubProps {
   studentName?: string;
   userUid?: string;
   onToast?: (message: string, type?: "success" | "info" | "error") => void;
   onClose?: () => void;
+  onOpenSubscriptionPlans?: () => void;
 }
 
 export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
@@ -44,6 +61,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
   userUid = "",
   onToast,
   onClose,
+  onOpenSubscriptionPlans,
 }) => {
   const effectiveUid = useMemo(() => {
     if (userUid && userUid !== "local_learner") return userUid;
@@ -83,6 +101,8 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [withdrawAmount, setWithdrawAmount] = useState<string>(
     String(commissionConfig.minWithdrawalLimit || 50)
   );
@@ -142,13 +162,37 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
     };
   }, []);
 
-  const dynamicTiers = useMemo(() => {
-    return getDynamicTierConfig(commissionConfig);
+  // Referrer Active Subscription Tier (1M, 3M, 6M, 12M, 24M or free)
+  const referrerTier: PlanReferralTier = useMemo(() => {
+    return getReferrerActivePlanTier(effectiveUid || effectiveName, commissionConfig);
+  }, [effectiveUid, effectiveName, commissionConfig]);
+
+  // Active dynamic plan referral tiers
+  const activePlanTiers: PlanReferralTier[] = useMemo(() => {
+    return getPlanReferralTiers(commissionConfig);
   }, [commissionConfig]);
+
+  const vipTier: PlanReferralTier = useMemo(() => {
+    return (
+      activePlanTiers.find((t) => t.durationMonths === 12) ||
+      activePlanTiers[3] ||
+      PLAN_REFERRAL_TIERS[3]
+    );
+  }, [activePlanTiers]);
+
+  const dynamicTiers = useMemo(() => {
+    return getDynamicTierConfig(commissionConfig, referrerTier);
+  }, [commissionConfig, referrerTier]);
+
+  // Active platform subscription plans
+  const subscriptionPlans: SubscriptionPlan[] = useMemo(() => {
+    return getActiveSubscriptionPlans();
+  }, []);
 
   // Calculator state
   const [calcDirectInvites, setCalcDirectInvites] = useState<number>(5);
   const [calcDuplicationRate, setCalcDuplicationRate] = useState<number>(3);
+  const [calcSelectedPlanId, setCalcSelectedPlanId] = useState<string>("semiannual_149");
 
   const referralLink = `${window.location.origin}?ref=${refState.referralCode}`;
 
@@ -166,11 +210,30 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
     setTimeout(() => setCopiedLink(false), 2500);
   };
 
+  useEffect(() => {
+    if (showQrModal && referralLink) {
+      QRCode.toDataURL(referralLink, {
+        width: 280,
+        margin: 1,
+        color: { dark: "#0f172a", light: "#ffffff" },
+      })
+        .then(setQrDataUrl)
+        .catch((err) => console.warn("[QR] code generation warn:", err));
+    }
+  }, [showQrModal, referralLink]);
+
   const handleShareWhatsApp = () => {
-    const message = `🚀 *Namaste! Join Cherry AI 1-on-1 Classroom & Virtual Lab!*\n\nUse my invite code *${refState.referralCode}* to get instant access and ₹${commissionConfig.level1Reward} Welcome Reward!\n\n👉 Join here: ${referralLink}`;
+    const message = `🚀 *Namaste! Join Cherry AI 1-on-1 Socratic Classroom & Virtual Lab!*\n\nUse my referral invite code *${refState.referralCode}* to get instant access and earn up to 67% Referral Rewards! 🎉\n\n👉 Join here: ${referralLink}`;
     const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
     window.open(whatsappUrl, "_blank");
     if (onToast) onToast("Opening WhatsApp share! 📲", "info");
+  };
+
+  const handleShareTelegram = () => {
+    const text = `🚀 Join Cherry AI 1-on-1 Socratic Classroom & Virtual Lab!\n\nUse my invite code ${refState.referralCode} to get instant access and earn up to 67% Referral Rewards! 🎉\n\n👉 Join here: ${referralLink}`;
+    const tgUrl = `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent(text)}`;
+    window.open(tgUrl, "_blank");
+    if (onToast) onToast("Opening Telegram share! ✈️", "info");
   };
 
   const handleNativeShare = async () => {
@@ -178,7 +241,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
       try {
         await navigator.share({
           title: "Cherry AI - 1-on-1 AI Classroom & Lab",
-          text: `Join Cherry AI with my referral code ${refState.referralCode} and earn ₹${commissionConfig.level1Reward} Welcome Reward!`,
+          text: `Join Cherry AI with my referral code ${refState.referralCode} and earn up to 67% Referral Rewards!`,
           url: referralLink,
         });
         if (onToast) onToast("Shared successfully! 🎉", "success");
@@ -206,23 +269,73 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
     }
   };
 
-  // Level stats calculation dynamically linked to commissionConfig
+  // Level stats calculation dynamically linked to commissionConfig and activity records
   const level1Count = refState.tierCounts[1] || 0;
-  const level1Earned = level1Count * commissionConfig.level1Reward;
+  const level1EarnedFromActivities = (refState.activities || [])
+    .filter((a) => a.level === 1 && a.status === "credited")
+    .reduce((acc, curr) => acc + (curr.amount || 0), 0);
+  const level1Earned =
+    level1EarnedFromActivities > 0
+      ? level1EarnedFromActivities
+      : level1Count * (referrerTier.level1Percent ? Math.max(1, Math.round(149 * (referrerTier.level1Percent / 100))) : commissionConfig.level1Reward);
+
   const level5Count = refState.tierCounts[5] || 0;
-  const level5Earned = level5Count * commissionConfig.level5Reward;
+  const level5EarnedFromActivities = (refState.activities || [])
+    .filter((a) => a.level === 5 && a.status === "credited")
+    .reduce((acc, curr) => acc + (curr.amount || 0), 0);
+  const level5Earned =
+    level5EarnedFromActivities > 0
+      ? level5EarnedFromActivities
+      : level5Count * (referrerTier.level5Percent ? Math.max(1, Math.round(149 * (referrerTier.level5Percent / 100))) : commissionConfig.level5Reward);
+
   const totalTeamMembers = Object.values(refState.tierCounts).reduce(
     (a: number, b: number) => a + Number(b || 0),
     0
   );
 
-  // Calculator estimated income based on admin configuration
-  const calcLevel1Earned = calcDirectInvites * commissionConfig.level1Reward;
+  // Calculator selected plan lookup
+  const calcTargetPlan = useMemo(() => {
+    return (
+      subscriptionPlans.find((p) => p.id === calcSelectedPlanId) ||
+      subscriptionPlans[0] || {
+        id: "semiannual_149",
+        name: "6 Months Plan",
+        priceINR: 149,
+        durationMonths: 6,
+      }
+    );
+  }, [subscriptionPlans, calcSelectedPlanId]);
+
+  // Exact earnings per student joining with calcTargetPlan based on referrer's active tier
+  const calcRewardBreakdown = useMemo(() => {
+    return calculateTieredReferralReward({
+      planPriceINR: calcTargetPlan.priceINR,
+      planDurationMonths: calcTargetPlan.durationMonths,
+      planId: calcTargetPlan.id,
+      planName: calcTargetPlan.name,
+      referrerIdOrName: effectiveUid || effectiveName,
+      config: commissionConfig,
+    });
+  }, [calcTargetPlan, effectiveUid, effectiveName, commissionConfig]);
+
+  // Dynamic compounding calculations
+  const calcLevel1Earned = calcDirectInvites * calcRewardBreakdown.level1Reward;
   const calcLevel5Members = Math.round(
     calcDirectInvites * Math.pow(calcDuplicationRate, 4)
   );
-  const calcLevel5Earned = calcLevel5Members * commissionConfig.level5Reward;
+  const calcLevel5Earned = calcLevel5Members * calcRewardBreakdown.level5Reward;
   const calcTotalPotential = calcLevel1Earned + calcLevel5Earned;
+
+  // Comparison if referrer upgrades to 12M VIP
+  const vipRewardBreakdown = useMemo(() => {
+    const l1 = Math.max(1, Math.round(calcTargetPlan.priceINR * (vipTier.level1Percent / 100)));
+    const l5 = Math.max(1, Math.round(calcTargetPlan.priceINR * (vipTier.level5Percent / 100)));
+    return { l1, l5 };
+  }, [calcTargetPlan, vipTier]);
+
+  const calcVipTotalPotential =
+    calcDirectInvites * vipRewardBreakdown.l1 + calcLevel5Members * vipRewardBreakdown.l5;
+  const calcVipUpgradeDifference = Math.max(0, calcVipTotalPotential - calcTotalPotential);
 
   return (
     <div className="w-full flex-1 flex flex-col space-y-3.5 sm:space-y-4 text-left max-w-2xl mx-auto px-1 sm:px-2 pb-8 overflow-x-hidden">
@@ -254,9 +367,10 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
         )}
 
         <div className="flex items-center gap-1.5 ml-auto">
-          <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10.5px] font-mono font-black flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-            Direct ₹{commissionConfig.level1Reward} + 5th ₹{commissionConfig.level5Reward}
+          <span className="px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10.5px] font-mono font-black flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-ping" />
+            {referrerTier.durationMonths >= 12 ? "👑 VIP " : "⭐ "}
+            L1 {referrerTier.level1Percent}%{referrerTier.level5Percent > 0 ? ` + L5 ${referrerTier.level5Percent}%` : ""}
           </span>
         </div>
       </div>
@@ -275,6 +389,134 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           </div>
         </div>
       )}
+
+      {/* Missed Higher Earnings Warning Banner */}
+      {refState.lastMissedEarning && !refState.lastMissedEarning.isAcknowledged && (
+        <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-300 rounded-2xl text-amber-950 shadow-xs space-y-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-start gap-2">
+              <div className="w-7 h-7 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5 shadow-xs">
+                ⚡
+              </div>
+              <div>
+                <h4 className="text-xs font-black text-amber-900 leading-tight">
+                  Higher Referral Reward Available!
+                </h4>
+                <p className="text-[11px] text-amber-800 leading-snug mt-0.5">
+                  You earned <strong className="font-bold text-emerald-800">₹{refState.lastMissedEarning.earnedINR}</strong> from{" "}
+                  <strong>{refState.lastMissedEarning.newStudentName}</strong> ({refState.lastMissedEarning.planName || "Subscription"}), but on 12M VIP you could have earned{" "}
+                  <strong className="text-purple-900">₹{refState.lastMissedEarning.vipCouldEarnINR}</strong>.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (refState.lastMissedEarning) {
+                  const updated = {
+                    ...refState,
+                    lastMissedEarning: { ...refState.lastMissedEarning, isAcknowledged: true },
+                  };
+                  setRefState(updated);
+                  saveReferralState(updated, effectiveUid);
+                }
+              }}
+              className="text-amber-500 hover:text-amber-700 text-xs font-bold p-1 cursor-pointer"
+              title="Dismiss notification"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-amber-200/70 text-[11px]">
+            <span className="font-semibold text-amber-800">
+              Left on table: <strong className="text-rose-600 font-mono font-black">+₹{refState.lastMissedEarning.missedDiffINR}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenSubscriptionPlans) onOpenSubscriptionPlans();
+                window.dispatchEvent(new CustomEvent("cherry_open_subscription_plans"));
+              }}
+              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-[11px] font-black uppercase tracking-wider shadow-xs active:scale-95 cursor-pointer flex items-center gap-1"
+            >
+              <span>Upgrade to 12M VIP</span>
+              <ArrowRight className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Referrer Active Tier Status Card & Upgrade Banner */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-3.5 shadow-xs space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm shadow-xs text-white ${
+                referrerTier.durationMonths >= 12
+                  ? "bg-gradient-to-tr from-amber-500 to-yellow-400"
+                  : referrerTier.durationMonths >= 6
+                  ? "bg-gradient-to-tr from-indigo-600 to-purple-600"
+                  : "bg-gradient-to-tr from-slate-600 to-slate-800"
+              }`}
+            >
+              {referrerTier.durationMonths >= 12 ? "👑" : "⭐"}
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-black text-slate-900">
+                  {referrerTier.label}
+                </span>
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-black uppercase ${
+                    referrerTier.durationMonths >= 12
+                      ? "bg-amber-100 text-amber-900 border border-amber-300"
+                      : "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                  }`}
+                >
+                  {referrerTier.level1Percent}% L1 {referrerTier.level5Percent > 0 ? `+ ${referrerTier.level5Percent}% L5` : ""}
+                </span>
+              </div>
+              <span className="text-[10px] text-slate-500 block">
+                {referrerTier.badge || referrerTier.planName}
+              </span>
+            </div>
+          </div>
+
+          {referrerTier.durationMonths < 12 && (
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenSubscriptionPlans) onOpenSubscriptionPlans();
+                window.dispatchEvent(new CustomEvent("cherry_open_subscription_plans"));
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[10.5px] font-black uppercase tracking-wider flex items-center gap-1 transition-all active:scale-95 cursor-pointer shrink-0"
+            >
+              <span>Upgrade</span>
+              <ArrowUpRight className="w-3 h-3 text-indigo-600" />
+            </button>
+          )}
+        </div>
+
+        {/* Upgrade Prompt Banner if not 12M */}
+        {referrerTier.durationMonths < 12 && (
+          <div className="p-2.5 bg-gradient-to-r from-indigo-50/90 via-purple-50/90 to-amber-50/90 rounded-xl border border-indigo-100 flex items-center justify-between gap-2">
+            <span className="text-[10.5px] text-slate-700 font-medium leading-tight">
+              💡 <strong className="text-indigo-950">Upgrade to 12 Months VIP</strong> to unlock maximum <strong className="text-emerald-700 font-bold">{vipTier.level1Percent}% Level 1</strong> + <strong className="text-purple-700 font-bold">{vipTier.level5Percent}% Level 5</strong> (up to {vipTier.totalPercent}% Max Cap) network royalties!
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenSubscriptionPlans) onOpenSubscriptionPlans();
+                window.dispatchEvent(new CustomEvent("cherry_open_subscription_plans"));
+              }}
+              className="text-[10.5px] font-black text-indigo-700 hover:text-indigo-900 underline whitespace-nowrap cursor-pointer shrink-0"
+            >
+              Plans →
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Hero Wallet & Earnings Card - Mobile First High Impact Gradient */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-950 via-indigo-900 to-purple-950 text-white p-4 sm:p-5 shadow-md border border-indigo-700/50">
@@ -379,6 +621,26 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           <span>Share on WhatsApp & Invite Friends</span>
         </button>
 
+        {/* Telegram & Instant QR Code Action Strip */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={handleShareTelegram}
+            className="py-2.5 px-3 bg-sky-500 hover:bg-sky-600 active:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+          >
+            <span>✈️</span>
+            <span>Telegram</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowQrModal(true)}
+            className="py-2.5 px-3 bg-slate-900 hover:bg-slate-800 active:bg-black text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+          >
+            <QrCode className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Show QR Code</span>
+          </button>
+        </div>
+
         {/* Code & Link Side by Side on Mobile */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {/* Referral Code Box */}
@@ -467,7 +729,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           <div className="bg-emerald-50/80 p-2 rounded-xl border border-emerald-100">
             <span className="text-xs block">3️⃣</span>
             <span className="text-[9px] font-black text-emerald-700 block leading-tight mt-0.5">
-              Get ₹{commissionConfig.level1Reward} + ₹{commissionConfig.level5Reward}
+              Get {referrerTier.level1Percent}% + {referrerTier.level5Percent}%
             </span>
             <span className="text-[8px] text-emerald-600 block">L1 & L5 Payout</span>
           </div>
@@ -505,14 +767,19 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
       {/* TAB 1: 5-LEVEL PLAN STRUCTURE */}
       {activeTab === "plan" && (
         <div className="space-y-2.5">
-          <div className="p-3 bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-100 rounded-xl text-slate-800 text-xs flex items-start gap-2">
+          <div className="p-3 bg-gradient-to-r from-indigo-50 via-purple-50 to-emerald-50/50 border border-indigo-100 rounded-xl text-slate-800 text-xs flex items-start gap-2">
             <Sparkles className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-            <div>
-              <span className="font-bold text-indigo-950 block text-[11.5px]">
-                5-Level Income Compensation Architecture
-              </span>
-              <span className="text-slate-600 text-[10.5px] leading-relaxed">
-                Direct referrals par <strong className="text-emerald-700">₹{commissionConfig.level1Reward}</strong> aur 5th tier indirect network referrals par <strong className="text-purple-700">₹{commissionConfig.level5Reward}</strong> har student par milte hain.
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-1 flex-wrap">
+                <span className="font-bold text-indigo-950 block text-[11.5px]">
+                  5-Level Income Compensation Architecture
+                </span>
+                <span className="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 font-bold border border-indigo-200/60">
+                  {referrerTier.label} ({referrerTier.level1Percent}%)
+                </span>
+              </div>
+              <span className="text-slate-600 text-[10.5px] leading-relaxed mt-0.5 block">
+                Direct referrals par <strong className="text-emerald-700 font-bold">{referrerTier.level1Percent}%</strong> aur 5th tier indirect network referrals par <strong className="text-purple-700 font-bold">{referrerTier.level5Percent}%</strong> active plan tier ke anusar milte hain.
               </span>
             </div>
           </div>
@@ -520,8 +787,24 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           <div className="space-y-2">
             {dynamicTiers.map((tier) => {
               const count = refState.tierCounts[tier.level] || 0;
-              const earned = count * tier.incomePerMember;
-              const isEarningLevel = tier.incomePerMember > 0;
+              const earnedFromActivities = (refState.activities || [])
+                .filter((a) => a.level === tier.level && a.status === "credited")
+                .reduce((acc, curr) => acc + (curr.amount || 0), 0);
+              const earned =
+                earnedFromActivities > 0
+                  ? earnedFromActivities
+                  : count *
+                    (tier.level === 1
+                      ? Math.max(1, Math.round(149 * (referrerTier.level1Percent / 100)))
+                      : tier.level === 5
+                      ? Math.max(1, Math.round(149 * (referrerTier.level5Percent / 100)))
+                      : 0);
+              const isEarningLevel = (tier.percentage ?? 0) > 0 || tier.incomePerMember > 0;
+              const rateTag =
+                tier.rateLabel ||
+                (isEarningLevel
+                  ? `${tier.percentage || (tier.level === 1 ? referrerTier.level1Percent : referrerTier.level5Percent)}% / student`
+                  : "₹0 / student");
 
               return (
                 <div
@@ -561,7 +844,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                           : "bg-slate-100 text-slate-500 border border-slate-200"
                       }`}
                     >
-                      ₹{tier.incomePerMember} / student
+                      {rateTag}
                     </span>
                   </div>
 
@@ -589,6 +872,110 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
               );
             })}
           </div>
+
+          {/* Subscription Plans Commission Rate Matrix */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-3.5 shadow-xs space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                  <Percent className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <h4 className="font-black text-slate-900 text-xs sm:text-sm">
+                    Plan Commission Matrix
+                  </h4>
+                  <span className="text-[10px] text-slate-500 block">
+                    Rewards dynamically scale by student's plan price & duration
+                  </span>
+                </div>
+              </div>
+
+              {referrerTier.durationMonths < 12 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onOpenSubscriptionPlans) onOpenSubscriptionPlans();
+                    window.dispatchEvent(new CustomEvent("cherry_open_subscription_plans"));
+                  }}
+                  className="text-[10px] font-black text-indigo-700 hover:text-indigo-900 cursor-pointer flex items-center gap-0.5"
+                >
+                  <span>Unlock VIP</span>
+                  <ArrowUpRight className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            {/* Plan Tier Comparison Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {subscriptionPlans.map((plan) => {
+                const myEarnings = calculateTieredReferralReward({
+                  planPriceINR: plan.priceINR,
+                  planDurationMonths: plan.durationMonths,
+                  planId: plan.id,
+                  planName: plan.name,
+                  referrerIdOrName: effectiveUid || effectiveName,
+                  config: commissionConfig,
+                });
+
+                // VIP potential for comparison
+                const vipL1 = Math.max(1, Math.round(plan.priceINR * (vipTier.level1Percent / 100)));
+                const vipL5 = Math.max(1, Math.round(plan.priceINR * (vipTier.level5Percent / 100)));
+
+                return (
+                  <div
+                    key={plan.id}
+                    className="p-2.5 rounded-xl border border-slate-200/80 bg-slate-50/60 hover:bg-slate-50 space-y-1.5 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[11px] font-bold text-slate-900 truncate">
+                        {plan.name}
+                      </span>
+                      <span className="text-[11px] font-mono font-black text-indigo-700 shrink-0">
+                        ₹{plan.priceINR}
+                      </span>
+                    </div>
+
+                    {/* Level 1 & Level 5 Row */}
+                    <div className="grid grid-cols-2 gap-1.5 text-[10px] pt-1 border-t border-slate-200/60">
+                      <div className="bg-white rounded-lg p-1.5 border border-slate-100 text-center">
+                        <span className="text-[8.5px] font-mono uppercase text-slate-400 block">
+                          Level 1 (Direct)
+                        </span>
+                        <span className="font-mono font-black text-emerald-700 text-xs">
+                          ₹{myEarnings.level1Reward}
+                        </span>
+                        <span className="text-[8px] text-slate-400 block">
+                          ({myEarnings.level1Percent}%)
+                        </span>
+                      </div>
+
+                      <div className="bg-white rounded-lg p-1.5 border border-slate-100 text-center">
+                        <span className="text-[8.5px] font-mono uppercase text-slate-400 block">
+                          Level 5 (Team)
+                        </span>
+                        <span
+                          className={`font-mono font-black text-xs ${
+                            myEarnings.level5Reward > 0 ? "text-purple-700" : "text-slate-400"
+                          }`}
+                        >
+                          ₹{myEarnings.level5Reward}
+                        </span>
+                        <span className="text-[8px] text-slate-400 block">
+                          ({myEarnings.level5Percent}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    {referrerTier.durationMonths < 12 && vipL1 > myEarnings.level1Reward && (
+                      <div className="text-[9px] text-amber-800 font-medium text-center bg-amber-50 rounded-md py-0.5 border border-amber-200/60">
+                        On 12M VIP: <strong className="text-amber-950 font-mono">₹{vipL1} L1 + ₹{vipL5} L5</strong>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -601,8 +988,38 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
               5-Level Compounding Income Simulator
             </h3>
             <p className="text-[11px] text-slate-500">
-              Check potential earnings from 1st and 5th Level network growth.
+              Check potential earnings from 1st and 5th Level network growth based on chosen plan.
             </p>
+          </div>
+
+          {/* Plan Selector for Simulator */}
+          <div className="space-y-1.5 p-2.5 bg-indigo-50/70 border border-indigo-100 rounded-xl">
+            <div className="flex items-center justify-between text-[9.5px] font-mono font-bold uppercase tracking-wider text-indigo-900">
+              <span>Select Student Plan:</span>
+              <span className="text-indigo-600 lowercase font-sans font-semibold">
+                rewards scale with price
+              </span>
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-0.5 touch-pan-x overscroll-x-contain">
+              {subscriptionPlans.map((p) => {
+                const isSelected = p.id === calcSelectedPlanId;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setCalcSelectedPlanId(p.id)}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold whitespace-nowrap transition-all cursor-pointer active:scale-95 shrink-0 ${
+                      isSelected
+                        ? "bg-indigo-600 text-white shadow-xs"
+                        : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span>{p.name}</span>
+                    <span className="ml-1 opacity-80 font-mono">₹{p.priceINR}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="space-y-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
@@ -664,14 +1081,19 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
 
           {/* Calculator Output Grid */}
           <div className="p-3 bg-gradient-to-br from-indigo-900 via-indigo-800 to-purple-900 text-white rounded-2xl space-y-2.5">
-            <span className="text-[9.5px] font-mono font-bold uppercase tracking-wider text-indigo-200 block">
-              Estimated Total Potential Income:
-            </span>
+            <div className="flex items-center justify-between">
+              <span className="text-[9.5px] font-mono font-bold uppercase tracking-wider text-indigo-200 block">
+                Estimated Potential ({referrerTier.label}):
+              </span>
+              <span className="text-[9px] font-mono bg-white/10 px-2 py-0.5 rounded-full text-indigo-200">
+                {calcRewardBreakdown.level1Percent}% L1 / {calcRewardBreakdown.level5Percent}% L5
+              </span>
+            </div>
 
             <div className="grid grid-cols-3 gap-1.5 text-center">
               <div className="bg-white/10 backdrop-blur-xs rounded-xl p-2 border border-white/10">
                 <span className="text-[8px] font-mono text-emerald-300 uppercase font-bold block truncate">
-                  1st Level
+                  1st Level (Direct)
                 </span>
                 <span className="text-xs sm:text-sm font-black text-white mt-0.5 block truncate">
                   ₹{calcLevel1Earned.toLocaleString()}
@@ -680,7 +1102,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
 
               <div className="bg-white/10 backdrop-blur-xs rounded-xl p-2 border border-white/10">
                 <span className="text-[8px] font-mono text-purple-300 uppercase font-bold block truncate">
-                  5th Level
+                  5th Level (Team)
                 </span>
                 <span className="text-xs sm:text-sm font-black text-white mt-0.5 block truncate">
                   ₹{calcLevel5Earned.toLocaleString()}
@@ -696,6 +1118,34 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 </span>
               </div>
             </div>
+
+            {/* VIP Comparison Banner inside Simulator */}
+            {referrerTier.durationMonths < 12 && calcVipUpgradeDifference > 0 && (
+              <div className="p-2 bg-white/10 backdrop-blur-xs border border-amber-400/40 rounded-xl flex items-center justify-between gap-2 mt-1">
+                <div className="min-w-0">
+                  <span className="text-[9px] text-amber-300 font-mono font-bold uppercase block">
+                    👑 12-Month VIP Earning Potential:
+                  </span>
+                  <span className="text-[11px] font-black text-white">
+                    ₹{calcVipTotalPotential.toLocaleString()}{" "}
+                    <span className="text-emerald-300 text-[10px] font-bold font-mono">
+                      (+₹{calcVipUpgradeDifference.toLocaleString()} extra)
+                    </span>
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onOpenSubscriptionPlans) onOpenSubscriptionPlans();
+                    window.dispatchEvent(new CustomEvent("cherry_open_subscription_plans"));
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-500 hover:to-yellow-600 text-amber-950 font-black text-[10px] uppercase tracking-wider shadow-xs active:scale-95 cursor-pointer shrink-0"
+                >
+                  Upgrade VIP
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -733,8 +1183,10 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                       </div>
                       <div className="min-w-0">
                         <span className="font-bold text-slate-900 block truncate text-[11px]">{act.name}</span>
-                        <span className="text-[9px] text-slate-400 font-mono block">
+                        <span className="text-[9px] text-slate-500 font-mono block truncate">
                           Level {act.level} • {act.date}
+                          {act.planName ? ` • ${act.planName}` : ""}
+                          {act.appliedPercent ? ` (${act.appliedPercent}%)` : ""}
                         </span>
                       </div>
                     </div>
@@ -847,37 +1299,46 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           <div className="space-y-2 text-[11px]">
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <strong className="text-slate-900 block font-bold mb-0.5">
-                1. 1st Level (Direct Income) ₹{commissionConfig.level1Reward}:
+                1. Plan-Wise Percentage Earning (1st Level Direct):
               </strong>
               <p className="text-slate-600">
-                Aapke invite code se join hone wale har student par turant flat ₹{commissionConfig.level1Reward} wallet me credit hote hain.
+                Aapke invite code se join hone wale student jo plan chunte hain, uske price ka {activePlanTiers[0]?.level1Percent}% se {vipTier.level1Percent}% commission turant aapke wallet me credit hota hai. Commission rate aapke active plan tier par depend karta hai.
               </p>
             </div>
 
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <strong className="text-slate-900 block font-bold mb-0.5">
-                2. 2nd, 3rd, 4th Levels (Bridge):
+                2. 2nd, 3rd, 4th Levels (Network Bridge):
               </strong>
               <p className="text-slate-600">
-                Ye intermediary bridge tiers hain jo network ko 5th tier tak expand karte hain.
+                Ye intermediary tiers hain jo aapki team ko 5th tier tak expand karte hain bina kisi extra condition ke.
               </p>
             </div>
 
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <strong className="text-slate-900 block font-bold mb-0.5">
-                3. 5th Level (Indirect Income) ₹{commissionConfig.level5Reward}:
+                3. 5th Level (Team Indirect Royalty up to {vipTier.level5Percent}%):
               </strong>
               <p className="text-slate-600">
-                Jab 4th Level ke students aage kisi ko invite karte hain, toh 5th Level par aapko seedhe ₹{commissionConfig.level5Reward} indirect income milti hai.
+                Jab 4th level ke students aage referral karte hain, toh team growth par aapko {activePlanTiers[0]?.level5Percent}% se {vipTier.level5Percent}% indirect royalty income milti hai.
               </p>
             </div>
 
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <strong className="text-slate-900 block font-bold mb-0.5">
-                4. Instant UPI Withdrawal:
+                4. Why Upgrade to 12 Months VIP Plan?
               </strong>
               <p className="text-slate-600">
-                Minimum ₹{commissionConfig.minWithdrawalLimit || 50} balance hone par kisi bhi UPI ID (Google Pay, PhonePe, Paytm, BHIM) par withdraw kar sakte hain.
+                12 Months plan lene par aapko maximum {vipTier.level1Percent}% Direct Level 1 + {vipTier.level5Percent}% Indirect Level 5 commission (total {vipTier.totalPercent}% cap) unlock hota hai, jisse aapki har referral par maximum network income generate hoti hai.
+              </p>
+            </div>
+
+            <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
+              <strong className="text-slate-900 block font-bold mb-0.5">
+                5. Instant UPI Withdrawal:
+              </strong>
+              <p className="text-slate-600">
+                Minimum ₹{commissionConfig.minWithdrawalLimit || 50} balance hone par kisi bhi UPI ID (Google Pay, PhonePe, Paytm, BHIM) par 1-click me withdraw request kar sakte hain.
               </p>
             </div>
           </div>
@@ -976,6 +1437,92 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* PHASE 4: INSTANT IN-CLASSROOM REFERRAL QR CODE MODAL */}
+      {showQrModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-6 shadow-2xl border border-slate-200 text-center space-y-4">
+            <div className="flex items-center justify-between pb-1 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 text-[#796AEF] flex items-center justify-center font-bold text-xs">
+                  <QrCode className="w-4 h-4" />
+                </div>
+                <div className="text-left">
+                  <h3 className="text-sm font-black text-slate-900 leading-tight">
+                    Invite QR Code
+                  </h3>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    Scan with any phone camera
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowQrModal(false)}
+                className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-900 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* QR Frame Container */}
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/90 flex flex-col items-center justify-center space-y-3">
+              {qrDataUrl ? (
+                <img
+                  src={qrDataUrl}
+                  alt="Referral QR Code"
+                  className="w-52 h-52 rounded-xl bg-white p-2 shadow-xs border border-slate-200"
+                />
+              ) : (
+                <div className="w-52 h-52 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 text-xs">
+                  Generating QR...
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-black text-slate-900">{refState.studentName}</span>
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-[#796AEF] border border-indigo-200 font-mono text-[10px] font-black uppercase">
+                    {refState.referralCode}
+                  </span>
+                </div>
+                <p className="text-[10.5px] text-slate-500 font-medium">
+                  Friends scan to get instant access & up to 67% referral rewards!
+                </p>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                className="py-2.5 px-3 bg-indigo-50 hover:bg-indigo-100 active:scale-95 text-[#796AEF] border border-indigo-200 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedLink ? "Copied!" : "Copy Link"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (qrDataUrl) {
+                    const link = document.createElement("a");
+                    link.href = qrDataUrl;
+                    link.download = `CherryAI_Invite_${refState.referralCode}.png`;
+                    link.click();
+                    onToast?.("QR Code downloaded! 🖼️", "success");
+                  }
+                }}
+                className="py-2.5 px-3 bg-[#796AEF] hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Save QR</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

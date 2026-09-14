@@ -281,6 +281,10 @@ export const LearnerProfileModal: React.FC<LearnerProfileModalProps> = ({
               onToast={(msg, type) => {
                 if (onToast) onToast(msg, type === "error" ? "warning" : type || "info");
               }}
+              onOpenSubscriptionPlans={() => {
+                window.dispatchEvent(new CustomEvent("cherry_open_subscription_plans"));
+                if (onClose) onClose();
+              }}
               onClose={() => setActiveTab("weak_topics")}
             />
           )}

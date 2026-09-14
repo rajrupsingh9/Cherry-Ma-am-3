@@ -11,6 +11,9 @@ import {
   ArrowRight,
   TrendingUp,
   Sliders,
+  Crown,
+  Percent,
+  ShieldCheck,
 } from "lucide-react";
 import {
   ReferralCommissionConfig,
@@ -19,6 +22,10 @@ import {
   saveReferralCommissionConfig,
   saveCommissionConfigToCloud,
   syncCommissionConfigFromCloud,
+  PlanReferralTier,
+  DEFAULT_PLAN_REFERRAL_TIERS,
+  getPlanReferralTiers,
+  validatePlanReferralTiers,
 } from "../utils/referralStore";
 
 interface AdminCommissionConfigCardProps {
@@ -34,6 +41,9 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
   const [level1Input, setLevel1Input] = useState<number>(50);
   const [level5Input, setLevel5Input] = useState<number>(50);
   const [minWithdrawalInput, setMinWithdrawalInput] = useState<number>(50);
+  const [tiersInput, setTiersInput] = useState<PlanReferralTier[]>(() =>
+    getPlanReferralTiers(getReferralCommissionConfig())
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
@@ -46,16 +56,46 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
     setLevel1Input(current.level1Reward);
     setLevel5Input(current.level5Reward);
     setMinWithdrawalInput(current.minWithdrawalLimit || 50);
+    setTiersInput(getPlanReferralTiers(current));
   }, []);
 
   // Track unsaved modifications
   useEffect(() => {
+    const activeConfigTiers = config.planTiers || DEFAULT_PLAN_REFERRAL_TIERS;
+    const tiersChanged =
+      JSON.stringify(tiersInput.map((t) => ({ l1: t.level1Percent, l5: t.level5Percent }))) !==
+      JSON.stringify(activeConfigTiers.map((t) => ({ l1: t.level1Percent, l5: t.level5Percent })));
+
     const changed =
-      level1Input !== config.level1Reward ||
-      level5Input !== config.level5Reward ||
-      minWithdrawalInput !== config.minWithdrawalLimit;
+      minWithdrawalInput !== config.minWithdrawalLimit ||
+      tiersChanged;
     setHasChanges(changed);
-  }, [level1Input, level5Input, minWithdrawalInput, config]);
+  }, [minWithdrawalInput, tiersInput, config]);
+
+  const handleTierPercentageChange = (
+    durationMonths: number,
+    field: "level1Percent" | "level5Percent",
+    val: number
+  ) => {
+    setTiersInput((prev) =>
+      prev.map((t) => {
+        if (t.durationMonths !== durationMonths) return t;
+        const updatedL1 = field === "level1Percent" ? val : t.level1Percent;
+        const updatedL5 = field === "level5Percent" ? val : t.level5Percent;
+        return {
+          ...t,
+          level1Percent: updatedL1,
+          level5Percent: updatedL5,
+          totalPercent: updatedL1 + updatedL5,
+        };
+      })
+    );
+  };
+
+  const handleResetTierDefaults = () => {
+    setTiersInput(DEFAULT_PLAN_REFERRAL_TIERS);
+    onToast?.("Tier multipliers reset to defaults: 22/15, 27/20, 32/25, 37/30 🔄", "info");
+  };
 
   const handleSave = async () => {
     if (level1Input < 0 || isNaN(level1Input)) {
@@ -71,31 +111,48 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
       return;
     }
 
+    // Validate custom tier percentages
+    const tierValidation = validatePlanReferralTiers(tiersInput);
+    if (!tierValidation.isValid || !tierValidation.sanitizedTiers) {
+      onToast?.(tierValidation.errors[0] || "Invalid plan tier percentages.", "error");
+      return;
+    }
+
     setIsSaving(true);
     try {
+      const vipTier =
+        tierValidation.sanitizedTiers.find((t) => t.durationMonths === 12) ||
+        tierValidation.sanitizedTiers[3];
+
       const updated: ReferralCommissionConfig = {
         ...config,
         level1Reward: Math.round(level1Input),
         level5Reward: Math.round(level5Input),
         minWithdrawalLimit: Math.round(minWithdrawalInput),
+        planTiers: tierValidation.sanitizedTiers,
+        promoTagline: `Refer & Earn: Up to ${vipTier.level1Percent}% Direct + ${vipTier.level5Percent}% Team Royalty (Max ${vipTier.totalPercent}%) on 12-Month Plan!`,
         updatedBy: "Admin",
       };
 
       // Save locally & persist to Firestore Cloud
       saveReferralCommissionConfig(updated);
       setConfig(updated);
+      setTiersInput(tierValidation.sanitizedTiers);
       setHasChanges(false);
 
       const cloudRes = await saveCommissionConfigToCloud(updated);
       if (cloudRes.success) {
         setSyncStatus(`Cloud Synced: ${new Date().toLocaleTimeString()}`);
         onToast?.(
-          `Commission Rates Updated: Direct = ₹${updated.level1Reward}, Indirect = ₹${updated.level5Reward} (Saved to Cloud ☁️)`,
+          `Commission & Tier Multipliers Saved to Cloud! ☁️ (VIP: ${vipTier.level1Percent}% L1 + ${vipTier.level5Percent}% L5 = ${vipTier.totalPercent}% Cap)`,
           "success"
         );
       } else {
         setSyncStatus("Saved locally (offline mode)");
-        onToast?.(`Commission rates updated locally: Direct = ₹${updated.level1Reward}, Indirect = ₹${updated.level5Reward}`, "info");
+        onToast?.(
+          `Commission rates & tier multipliers updated locally! (VIP: ${vipTier.level1Percent}% + ${vipTier.level5Percent}%)`,
+          "info"
+        );
       }
 
       if (onConfigSaved) onConfigSaved();
@@ -110,12 +167,13 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
     setLevel1Input(DEFAULT_REFERRAL_COMMISSION_CONFIG.level1Reward);
     setLevel5Input(DEFAULT_REFERRAL_COMMISSION_CONFIG.level5Reward);
     setMinWithdrawalInput(DEFAULT_REFERRAL_COMMISSION_CONFIG.minWithdrawalLimit);
+    setTiersInput(DEFAULT_PLAN_REFERRAL_TIERS);
     saveReferralCommissionConfig(DEFAULT_REFERRAL_COMMISSION_CONFIG);
     setConfig(DEFAULT_REFERRAL_COMMISSION_CONFIG);
     await saveCommissionConfigToCloud(DEFAULT_REFERRAL_COMMISSION_CONFIG);
     setHasChanges(false);
-    setSyncStatus(`Reset to Defaults: ₹50 + ₹50`);
-    onToast?.("Commission rates restored to default: Level 1 = ₹50, Level 5 = ₹50 🔄", "info");
+    setSyncStatus(`Reset to Defaults: Flat ₹50 + Standard Tiers (37%-67%)`);
+    onToast?.("Commission rates & tier multipliers restored to default! 🔄", "info");
     if (onConfigSaved) onConfigSaved();
   };
 
@@ -128,6 +186,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
         setLevel1Input(res.config.level1Reward);
         setLevel5Input(res.config.level5Reward);
         setMinWithdrawalInput(res.config.minWithdrawalLimit || 50);
+        setTiersInput(getPlanReferralTiers(res.config));
         setHasChanges(false);
         setSyncStatus(`Cloud Fetched: ${new Date().toLocaleTimeString()}`);
         onToast?.(res.message, "success");
@@ -156,11 +215,11 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
                 Commission &amp; Payout Policy Configurator
               </h3>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-bold border border-indigo-100">
-                Level 1 &amp; Level 5 Live Control
+                Plan Multipliers (22% - 67%) Live Control
               </span>
             </div>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              Set direct income (1st Level), team indirect income (5th Level), and minimum withdrawal limits.
+              Set direct income (Level 1) and team royalty (Level 5) multipliers across 1M, 3M, 6M, and 12M plans.
             </p>
           </div>
         </div>
@@ -182,93 +241,156 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
             type="button"
             onClick={handleResetDefaults}
             className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-700 text-slate-600 text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-            title="Reset to ₹50 Direct + ₹50 Team"
+            title="Reset to default tier multipliers (22%-67%)"
           >
             <RotateCcw className="w-3 h-3" />
-            <span>Reset (₹50)</span>
+            <span>Reset Defaults</span>
           </button>
         </div>
       </div>
 
-      {/* Main Form Fields Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {/* Tier 1: Direct Income */}
-        <div className="p-3 bg-emerald-50/60 rounded-xl border border-emerald-200/80 space-y-2 relative overflow-hidden">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              <label className="text-xs font-bold text-emerald-950">1st Level (Direct Income)</label>
+      {/* Plan Referral Tier Multipliers Matrix (1M, 3M, 6M, 12M) */}
+      <div className="space-y-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-lg bg-indigo-50 text-[#796AEF] flex items-center justify-center font-bold shrink-0">
+              <Percent className="w-3.5 h-3.5" />
             </div>
-            <span className="text-[9.5px] font-extrabold uppercase px-1.5 py-0.2 bg-emerald-200/60 text-emerald-800 rounded">
-              Direct Referral
-            </span>
+            <div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <h4 className="text-xs sm:text-sm font-bold text-slate-900">
+                  Plan Referral Tier Multipliers (Live %)
+                </h4>
+                <span className="text-[9.5px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                  Duration-Based
+                </span>
+              </div>
+              <p className="text-[10.5px] text-slate-500">
+                Direct (L1 %) and Team Royalty (L5 %) applied automatically to student referrals based on their active plan duration.
+              </p>
+            </div>
           </div>
 
-          <div className="relative">
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-700 font-bold text-sm">₹</div>
-            <input
-              type="number"
-              min={0}
-              step={5}
-              value={level1Input}
-              onChange={(e) => setLevel1Input(Number(e.target.value))}
-              className="w-full pl-7 pr-3 py-2 bg-white border border-emerald-300 rounded-lg text-sm font-black text-emerald-950 focus:outline-hidden focus:ring-2 focus:ring-emerald-500/30"
-              placeholder="50"
-            />
-          </div>
-          <p className="text-[10px] text-emerald-800/90 leading-tight">
-            Credited instantly to student's wallet whenever a friend uses their invite code.
-          </p>
+          <button
+            type="button"
+            onClick={handleResetTierDefaults}
+            className="self-start sm:self-auto text-[10.5px] font-bold text-[#796AEF] hover:text-indigo-800 flex items-center gap-1 px-2 py-1 rounded-md hover:bg-indigo-50 transition-colors cursor-pointer"
+            title="Reset tier percentages to 22/15, 27/20, 32/25, 37/30"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Reset Tiers (22/15 - 37/30)</span>
+          </button>
         </div>
 
-        {/* Tier 2-4: Bridge Tiers (Info Strip) */}
-        <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-slate-400" />
-              <span className="text-xs font-bold text-slate-700">2nd, 3rd, 4th Levels</span>
-            </div>
-            <span className="text-[9.5px] font-bold text-slate-500 px-1.5 py-0.2 bg-slate-200 rounded">
-              Bridge Tiers
-            </span>
-          </div>
+        {/* 4 Cards Grid for 1M, 3M, 6M, 12M */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+          {tiersInput.map((tier) => {
+            const totalCap = (Number(tier.level1Percent) || 0) + (Number(tier.level5Percent) || 0);
+            const companyMargin = Math.max(0, 100 - totalCap);
+            const isVip = tier.durationMonths === 12;
 
-          <div className="py-2 px-3 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 flex items-center justify-between">
-            <span>Commission per invite:</span>
-            <span className="font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded">₹0 (Bridge)</span>
-          </div>
-          <p className="text-[10px] text-slate-500 leading-tight">
-            Motivational bridge tiers leading scholars directly toward the 5th Level milestone bonus.
-          </p>
-        </div>
+            return (
+              <div
+                key={tier.tierId}
+                className={`p-3 rounded-xl border transition-all relative space-y-2.5 ${
+                  isVip
+                    ? "bg-gradient-to-b from-amber-50/50 to-white border-amber-300/80 shadow-2xs"
+                    : "bg-slate-50/50 border-slate-200"
+                }`}
+              >
+                {/* Card Header */}
+                <div className="flex items-center justify-between gap-1">
+                  <div className="flex items-center gap-1">
+                    {isVip ? (
+                      <Crown className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    ) : (
+                      <span className="w-2 h-2 rounded-full bg-[#796AEF]" />
+                    )}
+                    <span className="text-xs font-black text-slate-900 truncate">
+                      {tier.label}
+                    </span>
+                  </div>
+                  <span
+                    className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${
+                      isVip
+                        ? "bg-amber-200/80 text-amber-900"
+                        : "bg-indigo-100 text-indigo-800"
+                    }`}
+                  >
+                    {tier.badge}
+                  </span>
+                </div>
 
-        {/* Tier 5: Indirect Income */}
-        <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-200/80 space-y-2 relative overflow-hidden">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-[#796AEF]" />
-              <label className="text-xs font-bold text-indigo-950">5th Level (Indirect Income)</label>
-            </div>
-            <span className="text-[9.5px] font-extrabold uppercase px-1.5 py-0.2 bg-indigo-200/60 text-indigo-800 rounded">
-              Team Milestone
-            </span>
-          </div>
+                {/* Level 1 & Level 5 Inputs */}
+                <div className="grid grid-cols-2 gap-2">
+                  {/* Level 1 (Direct %) */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-emerald-900 flex items-center justify-between">
+                      <span>L1 Direct:</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={0}
+                        max={70}
+                        value={tier.level1Percent}
+                        onChange={(e) =>
+                          handleTierPercentageChange(
+                            tier.durationMonths,
+                            "level1Percent",
+                            Number(e.target.value)
+                          )
+                        }
+                        className="w-full pr-6 pl-2.5 py-1.5 bg-white border border-emerald-300 rounded-lg text-xs font-black text-emerald-950 focus:outline-hidden focus:ring-2 focus:ring-emerald-500/30"
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-emerald-700">
+                        %
+                      </span>
+                    </div>
+                  </div>
 
-          <div className="relative">
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-indigo-700 font-bold text-sm">₹</div>
-            <input
-              type="number"
-              min={0}
-              step={5}
-              value={level5Input}
-              onChange={(e) => setLevel5Input(Number(e.target.value))}
-              className="w-full pl-7 pr-3 py-2 bg-white border border-indigo-300 rounded-lg text-sm font-black text-indigo-950 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/30"
-              placeholder="50"
-            />
-          </div>
-          <p className="text-[10px] text-indigo-800/90 leading-tight">
-            Bonus payout earned whenever any student in their 4th-level network brings a new invite.
-          </p>
+                  {/* Level 5 (Team Royalty %) */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-indigo-900 flex items-center justify-between">
+                      <span>L5 Royalty:</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={0}
+                        max={50}
+                        value={tier.level5Percent}
+                        onChange={(e) =>
+                          handleTierPercentageChange(
+                            tier.durationMonths,
+                            "level5Percent",
+                            Number(e.target.value)
+                          )
+                        }
+                        className="w-full pr-6 pl-2.5 py-1.5 bg-white border border-indigo-300 rounded-lg text-xs font-black text-indigo-950 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/30"
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-indigo-700">
+                        %
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Live Computed Stats Bar */}
+                <div className="pt-1.5 border-t border-slate-200/70 flex items-center justify-between text-[10px] font-mono">
+                  <span className="text-slate-600 font-semibold">
+                    Cap:{" "}
+                    <strong className={totalCap > 70 ? "text-rose-600" : "text-slate-900"}>
+                      {totalCap}%
+                    </strong>
+                  </span>
+                  <span className="text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
+                    Margin: {companyMargin}%
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -310,7 +432,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
             }`}
           >
             <Save className={`w-3.5 h-3.5 ${isSaving ? "animate-spin" : ""}`} />
-            <span>{isSaving ? "Saving..." : "Save Commission Rates to Cloud"}</span>
+            <span>{isSaving ? "Saving..." : "Save All Rates & Tiers to Cloud"}</span>
           </button>
         </div>
       </div>
@@ -320,8 +442,11 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
         <div className="flex items-center gap-2 text-slate-600">
           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
           <span>
-            Active Formula: <strong>1st Level = ₹{level1Input}</strong> + <strong>Bridge = ₹0</strong> +{" "}
-            <strong>5th Level = ₹{level5Input}</strong>
+            Active Formula:{" "}
+            <strong>
+              Tiers: {tiersInput[0]?.totalPercent || 37}% (1M) to {tiersInput[3]?.totalPercent || 67}% (12M VIP)
+            </strong>{" "}
+            • Min Payout: ₹{minWithdrawalInput}
           </span>
           <span className="text-slate-400">• {syncStatus}</span>
         </div>

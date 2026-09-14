@@ -257,7 +257,11 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       setShowReferralInput(true);
       const studentId = activeAuthUser?.uid || "student_enroll";
       const studentName = name || activeAuthUser?.displayName || "Student";
-      const lookup = lookupReferralCode(raw, studentId, studentName);
+      const lookup = lookupReferralCode(raw, studentId, studentName, {
+        priceINR: selectedPlan.priceINR,
+        durationMonths: selectedPlan.durationMonths,
+        planId: selectedPlan.id,
+      });
       if (lookup.valid) {
         setAppliedReferral(lookup);
         setReferralFeedback({ status: "valid", message: lookup.message });
@@ -266,7 +270,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
         setReferralFeedback({ status: "invalid", message: lookup.message });
       }
     }
-  }, []);
+  }, [selectedPlan]);
 
   const handleApplyReferralCode = (codeToVerify?: string) => {
     const targetCode = (codeToVerify || referralCodeInput).trim().toUpperCase();
@@ -277,7 +281,11 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
     }
     const studentId = activeAuthUser?.uid || authedUser?.uid || "student_enroll";
     const studentName = name.trim() || activeAuthUser?.displayName || "Student";
-    const lookup = lookupReferralCode(targetCode, studentId, studentName);
+    const lookup = lookupReferralCode(targetCode, studentId, studentName, {
+      priceINR: selectedPlan.priceINR,
+      durationMonths: selectedPlan.durationMonths,
+      planId: selectedPlan.id,
+    });
     if (lookup.valid) {
       setAppliedReferral(lookup);
       setReferralFeedback({
@@ -543,6 +551,10 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
           newStudentName: cleanName,
           newStudentGrade: grade,
           newStudentEmail: targetUser?.email || undefined,
+          planPriceINR: selectedPlan.priceINR,
+          planDurationMonths: selectedPlan.durationMonths,
+          planId: selectedPlan.id,
+          planName: selectedPlan.name,
         });
 
         if (attribution.success) {
@@ -1144,16 +1156,40 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
 
                         {/* Status Feedback Pill */}
                         {appliedReferral ? (
-                          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex items-start gap-2 text-emerald-800 animate-fadeIn">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                            <div className="text-[11px] leading-snug">
-                              <p className="font-bold text-emerald-900">
-                                Invite Verified: {appliedReferral.referrerName}
-                              </p>
-                              <p className="text-emerald-700">
-                                ₹{appliedReferral.level1Reward} Direct Referral credit linked to upline!
-                              </p>
+                          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex items-start justify-between gap-2 text-emerald-800 animate-fadeIn">
+                            <div className="flex items-start gap-2 min-w-0">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                              <div className="text-[11px] leading-snug min-w-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-bold text-emerald-900 truncate">
+                                    Invite Verified: {appliedReferral.referrerName}
+                                  </span>
+                                  {appliedReferral.referrerTierLabel && (
+                                    <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-[9.5px] font-mono font-black">
+                                      {appliedReferral.referrerTierLabel}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-emerald-700 mt-0.5">
+                                  {appliedReferral.level1Percent ? `${appliedReferral.level1Percent}% (₹${appliedReferral.level1Reward})` : `₹${appliedReferral.level1Reward}`} Direct Referral reward active! 🎉
+                                </p>
+                              </div>
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAppliedReferral(null);
+                                setReferralCodeInput("");
+                                setReferralFeedback({ status: "idle", message: "" });
+                                try {
+                                  localStorage.removeItem("cherry_pending_ref_code");
+                                } catch (_) {}
+                              }}
+                              className="text-[10px] text-slate-500 hover:text-rose-600 font-bold underline shrink-0 cursor-pointer pt-0.5"
+                              title="Remove or enter another code"
+                            >
+                              Remove
+                            </button>
                           </div>
                         ) : referralFeedback.status === "invalid" ? (
                           <div className="bg-rose-50 border border-rose-200 rounded-xl p-2 flex items-center gap-2 text-rose-800 text-[11px]">

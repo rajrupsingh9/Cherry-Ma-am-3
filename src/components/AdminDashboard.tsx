@@ -59,6 +59,7 @@ import {
   PlayCircle,
   Snowflake,
   ShieldAlert,
+  Crown,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { getAllAdminEmails, addAdminEmail, removeAdminEmail, ADMIN_EMAILS } from "../utils/adminConfig";
@@ -87,6 +88,7 @@ import {
 import { FeeReceiptModal } from "./FeeReceiptModal";
 import { AdminUnifiedPlanManager } from "./AdminUnifiedPlanManager";
 import { AdminReferralDetailModal } from "./AdminReferralDetailModal";
+import { AdminTierLedgerModal } from "./AdminTierLedgerModal";
 import { AdminPayoutRequestsQueue } from "./AdminPayoutRequestsQueue";
 import { AdminPayoutApprovalModal } from "./AdminPayoutApprovalModal";
 import { AdminCommissionConfigCard } from "./AdminCommissionConfigCard";
@@ -691,6 +693,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [referralSubTab, setReferralSubTab] = useState<"network" | "payouts" | "settings">("network");
   const [payoutModalRecord, setPayoutModalRecord] = useState<WithdrawalRecord | null>(null);
   const [payoutModalMode, setPayoutModalMode] = useState<"approve" | "reject">("approve");
+  const [showTierLedgerModal, setShowTierLedgerModal] = useState(false);
 
   useEffect(() => {
     const handleRefUpdate = () => {
@@ -803,12 +806,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleExportAudit = () => {
-    if (studentSubscriptions.length === 0) {
+    const recordsToExport: StudentSubscriptionRecord[] =
+      studentSubscriptions.length > 0
+        ? studentSubscriptions
+        : mergedStudents.map((std) => {
+            const isPaid = std.isPro || std.subscriptionStatus === "active";
+            const isPending = std.subscriptionStatus === "pending_verification";
+            return {
+              id: std.id,
+              studentName: std.name,
+              studentEmail: std.email,
+              grade: std.grade,
+              board: std.board,
+              subject: std.subject,
+              planId: std.planId || "semiannual_149",
+              planName: std.subscriptionPlan || "6 Months Special Pass",
+              amountINR: std.paymentAmount || 149,
+              status: isPaid ? "active" : isPending ? "pending" : "expired",
+              isPro: isPaid,
+              utrNumber: std.utrNumber,
+              submittedAt: std.submittedAt || new Date().toISOString(),
+              activatedAt: std.submittedAt || new Date().toISOString(),
+              expiresAt: std.subscriptionExpires,
+              approvedBy: std.approvedBy || "Admin",
+            };
+          });
+
+    if (recordsToExport.length === 0) {
       onToast?.("No student subscription transactions available to export.", "warning");
       return;
     }
-    exportSubscriptionsToCSV(studentSubscriptions);
-    onToast?.("Financial audit ledger exported successfully! 📊", "success");
+    exportSubscriptionsToCSV(recordsToExport);
+    onToast?.(`Financial audit ledger (${recordsToExport.length} records) exported successfully! 📊`, "success");
   };
 
   const handleCopyUtr = (utr: string) => {
@@ -1372,7 +1401,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <span className="text-[11px] font-extrabold uppercase tracking-wider text-indigo-100">
-                Phase 1, 2 & 3 Live • Socratic Classroom & CRM
+                Phase 1, 2, 3 & 4 Live • CRM, Referral Engine & Financial Audit
               </span>
             </div>
             <h2 className="text-sm sm:text-base font-bold text-white leading-tight">
@@ -1801,6 +1830,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setShowTierLedgerModal(true)}
+                  className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-[#796AEF] border border-indigo-200 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  title="View detailed breakdown of tier multiplier payouts across all scholars"
+                >
+                  <Crown className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Tier Ledger</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => {
                     setReferralUpdateCounter((c) => c + 1);
                     onToast?.("Referral records refreshed from local & cloud state! 🔄", "info");
@@ -1862,7 +1901,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <SlidersHorizontal className="w-3.5 h-3.5" />
                 <span>Commission Rates &amp; Policy</span>
                 <span className="px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-extrabold text-[9.5px] font-mono">
-                  ₹{activeCommissionConfig.level1Reward}+₹{activeCommissionConfig.level5Reward}
+                  {activeCommissionConfig.planTiers?.[0]?.totalPercent || 37}% - {activeCommissionConfig.planTiers?.[3]?.totalPercent || 67}% Tiers
                 </span>
               </button>
             </div>
@@ -1885,11 +1924,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <span className="font-bold text-slate-900 block">
                         Live 5-Level Compensation Plan Dynamics:
                       </span>
-                      <span className="text-slate-600 text-[11px] block mt-0.5">
-                        • <strong>Level 1 (Direct Referral):</strong> Instant ₹{activeCommissionConfig.level1Reward} cash credit when a friend joins.<br />
+                      <span className="text-slate-600 text-[11px] block mt-0.5 leading-relaxed">
+                        • <strong>Level 1 (Direct Referral):</strong> {activeCommissionConfig.planTiers?.[0]?.level1Percent || 22}% to {activeCommissionConfig.planTiers?.[3]?.level1Percent || 37}% instant wallet credit based on referrer's active plan tier.<br />
                         • <strong>Levels 2, 3, 4 (Bridge Tiers):</strong> ₹0 commission; builds network depth and motivation.<br />
-                        • <strong>Level 5 (Team Milestone):</strong> Instant ₹{activeCommissionConfig.level5Reward} cash bonus when a 5th-tier friend joins.<br />
-                        • <strong>Minimum UPI Payout:</strong> ₹{activeCommissionConfig.minWithdrawalLimit || 50} threshold with direct VPA settlement.
+                        • <strong>Level 5 (Team Milestone Royalty):</strong> {activeCommissionConfig.planTiers?.[0]?.level5Percent || 15}% to {activeCommissionConfig.planTiers?.[3]?.level5Percent || 30}% indirect team royalty payout.<br />
+                        • <strong>Minimum UPI Payout:</strong> ₹{activeCommissionConfig.minWithdrawalLimit || 50} threshold with direct instant UPI settlement.
                       </span>
                     </div>
                   </div>
@@ -2146,6 +2185,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             >
                               {summary.status === "active" ? "Active" : "Paused"}
                             </span>
+
+                            {summary.planTierLabel && (
+                              <span className="px-2 py-0.2 rounded-full bg-purple-100 text-purple-800 font-mono font-black text-[9px] flex items-center gap-1">
+                                <Crown className="w-2.5 h-2.5 text-amber-500" />
+                                <span>{summary.planTierLabel}</span>
+                              </span>
+                            )}
 
                             {summary.isFrozen && (
                               <span className="px-2 py-0.2 rounded-full bg-cyan-100 text-cyan-800 font-mono font-black text-[9px] flex items-center gap-1">
@@ -3543,6 +3589,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }}
         onToast={onToast}
         onSwitchToStudentView={onSwitchToStudentView}
+      />
+
+      {/* ADMIN TIER MULTIPLIER LEDGER AUDIT MODAL */}
+      <AdminTierLedgerModal
+        isOpen={showTierLedgerModal}
+        onClose={() => setShowTierLedgerModal(false)}
+        students={referralSummaries}
+        onInspectStudent={(s) => setInspectingReferralStudent(s)}
+        onToast={onToast}
       />
 
       {/* ADMIN UPI PAYOUT APPROVAL / REJECTION ENGINE (PHASE 2) */}

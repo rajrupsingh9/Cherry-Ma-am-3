@@ -6903,12 +6903,12 @@ export const StudentAccountHub: React.FC<StudentAccountHubProps> = ({
                         </span>
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-[10.5px] font-sans font-bold">
-                      ₹50 + ₹50
+                    <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/80 text-[10.5px] font-sans font-bold">
+                      Up to 30% + 10%
                     </span>
                   </div>
                   <p className="text-[11.5px] text-[#4A4E5A] leading-relaxed">
-                    1st Level Direct: <strong className="text-emerald-700 font-bold">₹50</strong> • 5th Level Indirect: <strong className="text-[#796AEF] font-bold">₹50</strong>
+                    1st Level Direct: <strong className="text-emerald-700 font-bold">15%–30%</strong> • 5th Level Indirect: <strong className="text-[#796AEF] font-bold">up to 10%</strong> (Higher with 12M VIP!)
                   </p>
                   <button
                     type="button"
@@ -7113,6 +7113,9 @@ export const StudentAccountHub: React.FC<StudentAccountHubProps> = ({
                 <ReferAndEarnHub
                   studentName={studentName}
                   userUid={currentUser?.uid}
+                  onOpenSubscriptionPlans={() => {
+                    window.dispatchEvent(new CustomEvent("cherry_open_subscription_plans"));
+                  }}
                   onClose={() => {
                     setActiveMobileSubTab("profile");
                     setActiveDesktopTab("stats");

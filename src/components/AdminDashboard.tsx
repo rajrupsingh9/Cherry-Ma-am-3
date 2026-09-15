@@ -102,6 +102,7 @@ import {
   rejectWithdrawalRequest,
   WithdrawalRecord,
   getReferralCommissionConfig,
+  getPlanReferralTiers,
 } from "../utils/referralStore";
 import { db } from "../lib/firebase";
 import { collection, getDocs, query, limit } from "firebase/firestore";
@@ -701,15 +702,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
     window.addEventListener("cherry_referrals_updated", handleRefUpdate);
     window.addEventListener("cherry_commission_config_updated", handleRefUpdate);
+    window.addEventListener("cherry_referral_commission_updated", handleRefUpdate);
+    window.addEventListener("cherry_plans_updated", handleRefUpdate);
     return () => {
       window.removeEventListener("cherry_referrals_updated", handleRefUpdate);
       window.removeEventListener("cherry_commission_config_updated", handleRefUpdate);
+      window.removeEventListener("cherry_referral_commission_updated", handleRefUpdate);
+      window.removeEventListener("cherry_plans_updated", handleRefUpdate);
     };
   }, []);
 
   const activeCommissionConfig = useMemo(() => {
     return getReferralCommissionConfig();
   }, [referralUpdateCounter]);
+
+  const activeCommissionPlanTiers = useMemo(() => {
+    return getPlanReferralTiers(activeCommissionConfig);
+  }, [activeCommissionConfig]);
 
   const referralSummaries = useMemo(() => {
     return getAllStudentReferralSummaries(mergedStudents);
@@ -1901,7 +1910,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <SlidersHorizontal className="w-3.5 h-3.5" />
                 <span>Commission Rates &amp; Policy</span>
                 <span className="px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-extrabold text-[9.5px] font-mono">
-                  {activeCommissionConfig.planTiers?.[0]?.totalPercent || 37}% - {activeCommissionConfig.planTiers?.[3]?.totalPercent || 67}% Tiers
+                  {activeCommissionPlanTiers[0]?.totalPercent || 37}% - {activeCommissionPlanTiers[activeCommissionPlanTiers.length - 1]?.totalPercent || 67}% Tiers ({activeCommissionPlanTiers.length} Plans)
                 </span>
               </button>
             </div>
@@ -1922,12 +1931,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <Sparkles className="w-4 h-4 text-[#796AEF] shrink-0 mt-0.5" />
                     <div>
                       <span className="font-bold text-slate-900 block">
-                        Live 5-Level Compensation Plan Dynamics:
+                        Live 5-Level Compensation Plan Dynamics ({activeCommissionPlanTiers.length} Plans Synchronized):
                       </span>
                       <span className="text-slate-600 text-[11px] block mt-0.5 leading-relaxed">
-                        • <strong>Level 1 (Direct Referral):</strong> {activeCommissionConfig.planTiers?.[0]?.level1Percent || 22}% to {activeCommissionConfig.planTiers?.[3]?.level1Percent || 37}% instant wallet credit based on referrer's active plan tier.<br />
+                        • <strong>Level 1 (Direct Referral):</strong> {activeCommissionPlanTiers[0]?.level1Percent || 22}% to {activeCommissionPlanTiers[activeCommissionPlanTiers.length - 1]?.level1Percent || 37}% instant wallet credit based on referrer's active plan tier.<br />
                         • <strong>Levels 2, 3, 4 (Bridge Tiers):</strong> ₹0 commission; builds network depth and motivation.<br />
-                        • <strong>Level 5 (Team Milestone Royalty):</strong> {activeCommissionConfig.planTiers?.[0]?.level5Percent || 15}% to {activeCommissionConfig.planTiers?.[3]?.level5Percent || 30}% indirect team royalty payout.<br />
+                        • <strong>Level 5 (Team Milestone Royalty):</strong> {activeCommissionPlanTiers[0]?.level5Percent || 15}% to {activeCommissionPlanTiers[activeCommissionPlanTiers.length - 1]?.level5Percent || 30}% indirect team royalty payout across {activeCommissionPlanTiers.length} active subscription plans.<br />
                         • <strong>Minimum UPI Payout:</strong> ₹{activeCommissionConfig.minWithdrawalLimit || 50} threshold with direct instant UPI settlement.
                       </span>
                     </div>

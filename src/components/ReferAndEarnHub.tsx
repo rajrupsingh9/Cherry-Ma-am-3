@@ -157,8 +157,10 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
       setWithdrawAmount(String(latest.minWithdrawalLimit || 50));
     };
     window.addEventListener("cherry_commission_config_updated", handleConfigUpdate);
+    window.addEventListener("cherry_referral_commission_updated", handleConfigUpdate);
     return () => {
       window.removeEventListener("cherry_commission_config_updated", handleConfigUpdate);
+      window.removeEventListener("cherry_referral_commission_updated", handleConfigUpdate);
     };
   }, []);
 
@@ -174,25 +176,51 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
 
   const vipTier: PlanReferralTier = useMemo(() => {
     return (
-      activePlanTiers.find((t) => t.durationMonths === 12) ||
-      activePlanTiers[3] ||
+      activePlanTiers.find((t) => t.isMaxVip) ||
+      activePlanTiers.find((t) => t.durationMonths >= 12) ||
+      activePlanTiers[activePlanTiers.length - 1] ||
       PLAN_REFERRAL_TIERS[3]
     );
   }, [activePlanTiers]);
+
+  const isReferrerVip = Boolean(
+    referrerTier.isMaxVip ||
+    referrerTier.durationMonths >= (vipTier.durationMonths || 12)
+  );
 
   const dynamicTiers = useMemo(() => {
     return getDynamicTierConfig(commissionConfig, referrerTier);
   }, [commissionConfig, referrerTier]);
 
-  // Active platform subscription plans
-  const subscriptionPlans: SubscriptionPlan[] = useMemo(() => {
-    return getActiveSubscriptionPlans();
+  // Active platform subscription plans - dynamically synchronized with admin plans
+  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>(() => {
+    try {
+      return getActiveSubscriptionPlans();
+    } catch (_) {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    const handlePlansUpdate = () => {
+      try {
+        const plans = getActiveSubscriptionPlans();
+        setSubscriptionPlans(plans);
+      } catch (_) {}
+    };
+    window.addEventListener("cherry_plans_updated", handlePlansUpdate);
+    return () => {
+      window.removeEventListener("cherry_plans_updated", handlePlansUpdate);
+    };
   }, []);
 
   // Calculator state
   const [calcDirectInvites, setCalcDirectInvites] = useState<number>(5);
   const [calcDuplicationRate, setCalcDuplicationRate] = useState<number>(3);
-  const [calcSelectedPlanId, setCalcSelectedPlanId] = useState<string>("semiannual_149");
+  const [calcSelectedPlanId, setCalcSelectedPlanId] = useState<string>(() => {
+    const initialPlans = getActiveSubscriptionPlans();
+    return initialPlans[0]?.id || "semiannual_149";
+  });
 
   const referralLink = `${window.location.origin}?ref=${refState.referralCode}`;
 
@@ -369,7 +397,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
         <div className="flex items-center gap-1.5 ml-auto">
           <span className="px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10.5px] font-mono font-black flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-ping" />
-            {referrerTier.durationMonths >= 12 ? "👑 VIP " : "⭐ "}
+            {isReferrerVip ? "👑 VIP " : "⭐ "}
             L1 {referrerTier.level1Percent}%{referrerTier.level5Percent > 0 ? ` + L5 ${referrerTier.level5Percent}%` : ""}
           </span>
         </div>
@@ -404,7 +432,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 </h4>
                 <p className="text-[11px] text-amber-800 leading-snug mt-0.5">
                   You earned <strong className="font-bold text-emerald-800">₹{refState.lastMissedEarning.earnedINR}</strong> from{" "}
-                  <strong>{refState.lastMissedEarning.newStudentName}</strong> ({refState.lastMissedEarning.planName || "Subscription"}), but on 12M VIP you could have earned{" "}
+                  <strong>{refState.lastMissedEarning.newStudentName}</strong> ({refState.lastMissedEarning.planName || "Subscription"}), but on {vipTier.label} VIP you could have earned{" "}
                   <strong className="text-purple-900">₹{refState.lastMissedEarning.vipCouldEarnINR}</strong>.
                 </p>
               </div>
@@ -440,7 +468,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
               }}
               className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-[11px] font-black uppercase tracking-wider shadow-xs active:scale-95 cursor-pointer flex items-center gap-1"
             >
-              <span>Upgrade to 12M VIP</span>
+              <span>Upgrade to {vipTier.label} VIP</span>
               <ArrowRight className="w-3 h-3" />
             </button>
           </div>
@@ -453,14 +481,14 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           <div className="flex items-center gap-2.5">
             <div
               className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm shadow-xs text-white ${
-                referrerTier.durationMonths >= 12
+                isReferrerVip
                   ? "bg-gradient-to-tr from-amber-500 to-yellow-400"
                   : referrerTier.durationMonths >= 6
                   ? "bg-gradient-to-tr from-indigo-600 to-purple-600"
                   : "bg-gradient-to-tr from-slate-600 to-slate-800"
               }`}
             >
-              {referrerTier.durationMonths >= 12 ? "👑" : "⭐"}
+              {isReferrerVip ? "👑" : "⭐"}
             </div>
             <div>
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -469,7 +497,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 </span>
                 <span
                   className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-black uppercase ${
-                    referrerTier.durationMonths >= 12
+                    isReferrerVip
                       ? "bg-amber-100 text-amber-900 border border-amber-300"
                       : "bg-indigo-50 text-indigo-700 border border-indigo-200"
                   }`}
@@ -483,7 +511,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
             </div>
           </div>
 
-          {referrerTier.durationMonths < 12 && (
+          {!isReferrerVip && (
             <button
               type="button"
               onClick={() => {
@@ -498,11 +526,11 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
           )}
         </div>
 
-        {/* Upgrade Prompt Banner if not 12M */}
-        {referrerTier.durationMonths < 12 && (
+        {/* Upgrade Prompt Banner if not VIP */}
+        {!isReferrerVip && (
           <div className="p-2.5 bg-gradient-to-r from-indigo-50/90 via-purple-50/90 to-amber-50/90 rounded-xl border border-indigo-100 flex items-center justify-between gap-2">
             <span className="text-[10.5px] text-slate-700 font-medium leading-tight">
-              💡 <strong className="text-indigo-950">Upgrade to 12 Months VIP</strong> to unlock maximum <strong className="text-emerald-700 font-bold">{vipTier.level1Percent}% Level 1</strong> + <strong className="text-purple-700 font-bold">{vipTier.level5Percent}% Level 5</strong> (up to {vipTier.totalPercent}% Max Cap) network royalties!
+              💡 <strong className="text-indigo-950">Upgrade to {vipTier.label} VIP</strong> to unlock maximum <strong className="text-emerald-700 font-bold">{vipTier.level1Percent}% Level 1</strong> + <strong className="text-purple-700 font-bold">{vipTier.level5Percent}% Level 5</strong> (up to {vipTier.totalPercent}% Max Cap) network royalties!
             </span>
             <button
               type="button"
@@ -890,7 +918,7 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                 </div>
               </div>
 
-              {referrerTier.durationMonths < 12 && (
+              {!isReferrerVip && (
                 <button
                   type="button"
                   onClick={() => {
@@ -966,9 +994,9 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
                       </div>
                     </div>
 
-                    {referrerTier.durationMonths < 12 && vipL1 > myEarnings.level1Reward && (
+                    {!isReferrerVip && vipL1 > myEarnings.level1Reward && (
                       <div className="text-[9px] text-amber-800 font-medium text-center bg-amber-50 rounded-md py-0.5 border border-amber-200/60">
-                        On 12M VIP: <strong className="text-amber-950 font-mono">₹{vipL1} L1 + ₹{vipL5} L5</strong>
+                        On {vipTier.label} VIP: <strong className="text-amber-950 font-mono">₹{vipL1} L1 + ₹{vipL5} L5</strong>
                       </div>
                     )}
                   </div>
@@ -1120,11 +1148,11 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
             </div>
 
             {/* VIP Comparison Banner inside Simulator */}
-            {referrerTier.durationMonths < 12 && calcVipUpgradeDifference > 0 && (
+            {!isReferrerVip && calcVipUpgradeDifference > 0 && (
               <div className="p-2 bg-white/10 backdrop-blur-xs border border-amber-400/40 rounded-xl flex items-center justify-between gap-2 mt-1">
                 <div className="min-w-0">
                   <span className="text-[9px] text-amber-300 font-mono font-bold uppercase block">
-                    👑 12-Month VIP Earning Potential:
+                    👑 {vipTier.label} VIP Earning Potential:
                   </span>
                   <span className="text-[11px] font-black text-white">
                     ₹{calcVipTotalPotential.toLocaleString()}{" "}
@@ -1326,10 +1354,10 @@ export const ReferAndEarnHub: React.FC<ReferAndEarnHubProps> = ({
 
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
               <strong className="text-slate-900 block font-bold mb-0.5">
-                4. Why Upgrade to 12 Months VIP Plan?
+                4. Why Upgrade to {vipTier.label} VIP Plan?
               </strong>
               <p className="text-slate-600">
-                12 Months plan lene par aapko maximum {vipTier.level1Percent}% Direct Level 1 + {vipTier.level5Percent}% Indirect Level 5 commission (total {vipTier.totalPercent}% cap) unlock hota hai, jisse aapki har referral par maximum network income generate hoti hai.
+                {vipTier.label} plan lene par aapko maximum {vipTier.level1Percent}% Direct Level 1 + {vipTier.level5Percent}% Indirect Level 5 commission (total {vipTier.totalPercent}% cap) unlock hota hai, jisse aapki har referral par maximum network income generate hoti hai.
               </p>
             </div>
 

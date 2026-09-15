@@ -88,7 +88,13 @@ export const AdminReferralDetailModal: React.FC<AdminReferralDetailModalProps> =
       }
     };
     window.addEventListener("cherry_commission_config_updated", handleConfigUpdate);
-    return () => window.removeEventListener("cherry_commission_config_updated", handleConfigUpdate);
+    window.addEventListener("cherry_referral_commission_updated", handleConfigUpdate);
+    window.addEventListener("cherry_plans_updated", handleConfigUpdate);
+    return () => {
+      window.removeEventListener("cherry_commission_config_updated", handleConfigUpdate);
+      window.removeEventListener("cherry_referral_commission_updated", handleConfigUpdate);
+      window.removeEventListener("cherry_plans_updated", handleConfigUpdate);
+    };
   }, []);
 
   const availablePlanTiers = useMemo(

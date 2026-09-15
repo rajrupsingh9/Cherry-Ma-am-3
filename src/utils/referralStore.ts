@@ -6,16 +6,19 @@
 
 import { db } from "../lib/firebase";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { getActiveSubscriptionPlans, SubscriptionPlan } from "./subscriptionStore";
 
 export interface PlanReferralTier {
-  durationMonths: number; // 1 | 3 | 6 | 12
-  tierId: "tier_1m" | "tier_3m" | "tier_6m" | "tier_12m";
-  label: string; // "1 Month", "3 Months", "6 Months", "12 Months (VIP)"
+  durationMonths: number;
+  tierId: string;
+  planId?: string;
+  label: string;
   planName: string;
   badge: string;
-  level1Percent: number; // 22, 27, 32, 37
-  level5Percent: number; // 15, 20, 25, 30
-  totalPercent: number; // 37, 47, 57, 67 (Max Cap)
+  priceINR?: number;
+  level1Percent: number; // e.g. 22, 27, 32, 37
+  level5Percent: number; // e.g. 15, 20, 25, 30
+  totalPercent: number; // e.g. 37, 47, 57, 67 (Max Cap)
   isMaxVip?: boolean;
 }
 
@@ -103,20 +106,62 @@ export interface PlanTierValidationResult {
 }
 
 /**
+ * Generates an initial default referral tier for a subscription plan based on its duration
+ */
+export function createDefaultTierForPlan(plan: SubscriptionPlan): PlanReferralTier {
+  const duration = Math.max(1, plan.durationMonths || 1);
+  let l1 = 22;
+  let l5 = 15;
+  let badge = "Starter Tier";
+
+  if (duration >= 12) {
+    l1 = 37;
+    l5 = 30;
+    badge = "VIP Master Ambassador";
+  } else if (duration >= 6) {
+    l1 = 32;
+    l5 = 25;
+    badge = "Pro Scholar Tier";
+  } else if (duration >= 3) {
+    l1 = 27;
+    l5 = 20;
+    badge = "Booster Tier";
+  } else {
+    l1 = 22;
+    l5 = 15;
+    badge = "Starter Tier";
+  }
+
+  return {
+    durationMonths: duration,
+    tierId: `tier_${plan.id}`,
+    planId: plan.id,
+    label: plan.durationLabel || `${duration} Month${duration > 1 ? "s" : ""}`,
+    planName: plan.name,
+    badge,
+    priceINR: plan.priceINR,
+    level1Percent: l1,
+    level5Percent: l5,
+    totalPercent: l1 + l5,
+    isMaxVip: duration >= 12,
+  };
+}
+
+/**
  * Validates plan referral tiers ensuring safe margins, valid positive percentages and non-exceeding caps
  */
 export function validatePlanReferralTiers(tiers: PlanReferralTier[]): PlanTierValidationResult {
   const errors: string[] = [];
-  if (!Array.isArray(tiers) || tiers.length !== 4) {
-    return { isValid: false, errors: ["Exact 4 plan tiers (1M, 3M, 6M, 12M) are required."] };
+  if (!Array.isArray(tiers) || tiers.length === 0) {
+    return { isValid: false, errors: ["At least one active plan tier is required."] };
   }
 
-  const expectedMonths = [1, 3, 6, 12];
+  const maxDuration = Math.max(...tiers.map((t) => t.durationMonths || 1), 12);
   const sanitizedTiers: PlanReferralTier[] = [];
 
   for (let i = 0; i < tiers.length; i++) {
     const t = tiers[i];
-    const duration = expectedMonths[i] || t.durationMonths;
+    const duration = t.durationMonths || 1;
     const l1 = Number(t.level1Percent);
     const l5 = Number(t.level5Percent);
 
@@ -140,7 +185,7 @@ export function validatePlanReferralTiers(tiers: PlanReferralTier[]): PlanTierVa
       level1Percent: Math.round(l1),
       level5Percent: Math.round(l5),
       totalPercent: Math.round(total),
-      isMaxVip: duration === 12,
+      isMaxVip: duration === maxDuration || duration >= 12,
     });
   }
 
@@ -164,7 +209,7 @@ export function getReferralCommissionConfig(): ReferralCommissionConfig {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed.level1Reward === "number" && typeof parsed.level5Reward === "number") {
         const mergedTiers =
-          Array.isArray(parsed.planTiers) && parsed.planTiers.length === 4
+          Array.isArray(parsed.planTiers) && parsed.planTiers.length > 0
             ? parsed.planTiers
             : DEFAULT_PLAN_REFERRAL_TIERS;
         return {
@@ -181,14 +226,64 @@ export function getReferralCommissionConfig(): ReferralCommissionConfig {
 }
 
 /**
- * Retrieves the active 4 plan referral tiers from config or local storage
+ * Retrieves dynamic plan referral tiers synchronized with active subscription plans.
+ * If an admin added or edited plans in Plan & Pricing, this automatically reflects them.
  */
 export function getPlanReferralTiers(config?: ReferralCommissionConfig): PlanReferralTier[] {
   const current = config || getReferralCommissionConfig();
-  if (Array.isArray(current.planTiers) && current.planTiers.length === 4) {
-    return current.planTiers;
+  const configuredTiers: PlanReferralTier[] = Array.isArray(current.planTiers) ? current.planTiers : [];
+
+  let activePlans: SubscriptionPlan[] = [];
+  try {
+    activePlans = getActiveSubscriptionPlans();
+  } catch {
+    activePlans = [];
   }
-  return DEFAULT_PLAN_REFERRAL_TIERS;
+
+  // If no active plans found, return configured tiers or defaults
+  if (!activePlans || activePlans.length === 0) {
+    return configuredTiers.length > 0 ? configuredTiers : DEFAULT_PLAN_REFERRAL_TIERS;
+  }
+
+  // Map each active plan to its referral tier
+  const mergedTiers: PlanReferralTier[] = activePlans.map((plan) => {
+    // Try to find configured tier by planId or durationMonths
+    const matched = configuredTiers.find(
+      (t) => (t.planId && t.planId === plan.id) || t.durationMonths === plan.durationMonths
+    );
+
+    const defaultTier = createDefaultTierForPlan(plan);
+
+    if (matched) {
+      const l1 = typeof matched.level1Percent === "number" ? matched.level1Percent : defaultTier.level1Percent;
+      const l5 = typeof matched.level5Percent === "number" ? matched.level5Percent : defaultTier.level5Percent;
+      return {
+        ...matched,
+        planId: plan.id,
+        durationMonths: plan.durationMonths,
+        label: plan.durationLabel || matched.label || `${plan.durationMonths} Month${plan.durationMonths > 1 ? "s" : ""}`,
+        planName: plan.name || matched.planName,
+        priceINR: plan.priceINR,
+        badge: matched.badge || defaultTier.badge,
+        level1Percent: l1,
+        level5Percent: l5,
+        totalPercent: l1 + l5,
+      };
+    }
+
+    return defaultTier;
+  });
+
+  // Determine highest duration plan to mark as isMaxVip
+  const maxDuration = Math.max(...mergedTiers.map((t) => t.durationMonths || 1), 12);
+  const result = mergedTiers.map((t) => ({
+    ...t,
+    isMaxVip: t.durationMonths === maxDuration || t.durationMonths >= 12,
+  }));
+
+  // Sort by duration ascending
+  result.sort((a, b) => a.durationMonths - b.durationMonths);
+  return result;
 }
 
 /**
@@ -210,12 +305,13 @@ export function updatePlanReferralTiers(newTiers: PlanReferralTier[]): {
 
   const current = getReferralCommissionConfig();
   const vipTier =
-    validation.sanitizedTiers.find((t) => t.durationMonths === 12) || validation.sanitizedTiers[3];
+    validation.sanitizedTiers.find((t) => t.isMaxVip) ||
+    validation.sanitizedTiers[validation.sanitizedTiers.length - 1];
 
   const updated: ReferralCommissionConfig = {
     ...current,
     planTiers: validation.sanitizedTiers,
-    promoTagline: `Refer & Earn: Up to ${vipTier.level1Percent}% Direct + ${vipTier.level5Percent}% Team Royalty (Max ${vipTier.totalPercent}%) on 12-Month Plan!`,
+    promoTagline: `Refer & Earn: Up to ${vipTier.level1Percent}% Direct + ${vipTier.level5Percent}% Team Royalty (Max ${vipTier.totalPercent}%) on ${vipTier.label}!`,
     updatedAt: new Date().toLocaleDateString("en-IN", {
       day: "numeric",
       month: "short",
@@ -244,7 +340,7 @@ export function saveReferralCommissionConfig(config: ReferralCommissionConfig): 
       ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
       ...config,
       planTiers:
-        Array.isArray(config.planTiers) && config.planTiers.length === 4
+        Array.isArray(config.planTiers) && config.planTiers.length > 0
           ? config.planTiers
           : DEFAULT_PLAN_REFERRAL_TIERS,
       updatedAt: new Date().toLocaleDateString("en-IN", {
@@ -276,7 +372,7 @@ export async function syncCommissionConfigFromCloud(): Promise<{
     if (snapshot.exists()) {
       const cloudData = snapshot.data() as Partial<ReferralCommissionConfig>;
       const mergedTiers =
-        Array.isArray(cloudData.planTiers) && cloudData.planTiers.length === 4
+        Array.isArray(cloudData.planTiers) && cloudData.planTiers.length > 0
           ? cloudData.planTiers
           : DEFAULT_PLAN_REFERRAL_TIERS;
       const merged: ReferralCommissionConfig = {
@@ -471,16 +567,29 @@ export function getPlanReferralTierByDuration(
   config?: ReferralCommissionConfig
 ): PlanReferralTier {
   const tiers = getPlanReferralTiers(config);
-  if (durationMonths >= 12) {
-    return tiers.find((t) => t.durationMonths === 12) || tiers[3] || DEFAULT_PLAN_REFERRAL_TIERS[3];
-  }
-  if (durationMonths >= 6) {
-    return tiers.find((t) => t.durationMonths === 6) || tiers[2] || DEFAULT_PLAN_REFERRAL_TIERS[2];
-  }
-  if (durationMonths >= 3) {
-    return tiers.find((t) => t.durationMonths === 3) || tiers[1] || DEFAULT_PLAN_REFERRAL_TIERS[1];
-  }
-  return tiers.find((t) => t.durationMonths === 1) || tiers[0] || DEFAULT_PLAN_REFERRAL_TIERS[0];
+  // 1. Direct exact match
+  const exact = tiers.find((t) => t.durationMonths === durationMonths);
+  if (exact) return exact;
+
+  // 2. Best lower or equal match (descending)
+  const sortedDesc = [...tiers].sort((a, b) => (b.durationMonths || 1) - (a.durationMonths || 1));
+  const matched = sortedDesc.find((t) => durationMonths >= (t.durationMonths || 1));
+  if (matched) return matched;
+
+  // 3. Fallback to closest or first
+  return sortedDesc[sortedDesc.length - 1] || DEFAULT_PLAN_REFERRAL_TIERS[0];
+}
+
+/**
+ * Finds plan referral tier by plan ID
+ */
+export function getPlanReferralTierByPlanId(
+  planId: string,
+  config?: ReferralCommissionConfig
+): PlanReferralTier | undefined {
+  if (!planId) return undefined;
+  const tiers = getPlanReferralTiers(config);
+  return tiers.find((t) => t.planId === planId);
 }
 
 /**
@@ -508,16 +617,24 @@ export function getReferrerActivePlanTier(
         );
         if (found) {
           const planId = found.planId || "";
-          if (planId === "annual" || planId.includes("12") || found.durationMonths === 12) {
+          const dur = Number(found.durationMonths);
+          if (dur > 0) {
+            return getPlanReferralTierByDuration(dur, config);
+          }
+          if (planId) {
+            const byId = getPlanReferralTierByPlanId(planId, config);
+            if (byId) return byId;
+          }
+          if (planId === "annual" || planId.includes("12")) {
             return getPlanReferralTierByDuration(12, config);
           }
-          if (planId === "semiannual_149" || planId.includes("6") || found.durationMonths === 6) {
+          if (planId === "semiannual_149" || planId.includes("6")) {
             return getPlanReferralTierByDuration(6, config);
           }
-          if (planId === "quarterly" || planId.includes("3") || found.durationMonths === 3) {
+          if (planId === "quarterly" || planId.includes("3")) {
             return getPlanReferralTierByDuration(3, config);
           }
-          if (planId === "monthly" || found.durationMonths === 1) {
+          if (planId === "monthly") {
             return getPlanReferralTierByDuration(1, config);
           }
         }
@@ -530,6 +647,12 @@ export function getReferrerActivePlanTier(
       const currentSub = JSON.parse(currentSubRaw);
       if (currentSub?.isPro && currentSub?.activePlanId) {
         const pid = currentSub.activePlanId;
+        const dur = Number(currentSub.durationMonths);
+        if (dur > 0) return getPlanReferralTierByDuration(dur, config);
+        if (pid) {
+          const byId = getPlanReferralTierByPlanId(pid, config);
+          if (byId) return byId;
+        }
         if (pid === "annual" || pid.includes("12")) return getPlanReferralTierByDuration(12, config);
         if (pid === "semiannual_149" || pid.includes("6")) return getPlanReferralTierByDuration(6, config);
         if (pid === "quarterly" || pid.includes("3")) return getPlanReferralTierByDuration(3, config);
@@ -585,6 +708,18 @@ export function calculateTieredReferralReward(params: {
   let durationMonths = Number(params.planDurationMonths || 0);
   let planName = params.planName || "";
 
+  if ((!price || price <= 0 || !durationMonths) && params.planId) {
+    try {
+      const activePlans = getActiveSubscriptionPlans();
+      const matchedPlan = activePlans.find((p) => p.id === params.planId);
+      if (matchedPlan) {
+        price = matchedPlan.priceINR;
+        durationMonths = matchedPlan.durationMonths;
+        planName = planName || matchedPlan.name;
+      }
+    } catch (_) {}
+  }
+
   if (!price || price <= 0 || !durationMonths) {
     if (params.planId === "annual") {
       price = 1499;
@@ -609,14 +744,19 @@ export function calculateTieredReferralReward(params: {
     ? getReferrerActivePlanTier(params.referrerIdOrName, config)
     : getPlanReferralTierByDuration(1, config);
 
-  const vipTier = getPlanReferralTierByDuration(12, config); // 37% L1, 30% L5
+  const activeTiers = getPlanReferralTiers(config);
+  // VIP tier is the highest duration tier (last in ascending sorted list)
+  const vipTier =
+    (activeTiers.length > 0 ? activeTiers[activeTiers.length - 1] : null) ||
+    activeTiers.find((t) => t.isMaxVip) ||
+    getPlanReferralTierByDuration(12, config);
 
-  const l1Percent = referrerTier.level1Percent; // 22, 27, 32, or 37
+  const l1Percent = referrerTier.level1Percent; // dynamic based on configured tiers
   const l1Reward = Math.max(1, Math.round((price * l1Percent) / 100));
 
   const maxVipL1Reward = Math.max(1, Math.round((price * vipTier.level1Percent) / 100));
   const missedDiff = Math.max(0, maxVipL1Reward - l1Reward);
-  const canUpgrade = referrerTier.durationMonths < 12;
+  const canUpgrade = Boolean(!referrerTier.isMaxVip && referrerTier.durationMonths < (vipTier.durationMonths || 12));
 
   const uplineTier = params.upline5IdOrName
     ? getReferrerActivePlanTier(params.upline5IdOrName, config)

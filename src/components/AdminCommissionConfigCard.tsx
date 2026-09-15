@@ -26,7 +26,9 @@ import {
   DEFAULT_PLAN_REFERRAL_TIERS,
   getPlanReferralTiers,
   validatePlanReferralTiers,
+  createDefaultTierForPlan,
 } from "../utils/referralStore";
+import { getActiveSubscriptionPlans } from "../utils/subscriptionStore";
 
 interface AdminCommissionConfigCardProps {
   onToast?: (msg: string, type?: "success" | "info" | "warning" | "error") => void;
@@ -59,12 +61,29 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
     setTiersInput(getPlanReferralTiers(current));
   }, []);
 
+  // Real-time listener: When Admin adds, edits, or deletes plans in Plan & Pricing, reflect instantly
+  useEffect(() => {
+    const handlePlansUpdated = () => {
+      const current = getReferralCommissionConfig();
+      const syncedTiers = getPlanReferralTiers(current);
+      setTiersInput(syncedTiers);
+      setSyncStatus(`Auto-synced with ${syncedTiers.length} Active Plans`);
+    };
+
+    window.addEventListener("cherry_plans_updated", handlePlansUpdated);
+    window.addEventListener("cherry_referral_commission_updated", handlePlansUpdated);
+    return () => {
+      window.removeEventListener("cherry_plans_updated", handlePlansUpdated);
+      window.removeEventListener("cherry_referral_commission_updated", handlePlansUpdated);
+    };
+  }, []);
+
   // Track unsaved modifications
   useEffect(() => {
     const activeConfigTiers = config.planTiers || DEFAULT_PLAN_REFERRAL_TIERS;
     const tiersChanged =
-      JSON.stringify(tiersInput.map((t) => ({ l1: t.level1Percent, l5: t.level5Percent }))) !==
-      JSON.stringify(activeConfigTiers.map((t) => ({ l1: t.level1Percent, l5: t.level5Percent })));
+      JSON.stringify(tiersInput.map((t) => ({ id: t.tierId, l1: t.level1Percent, l5: t.level5Percent }))) !==
+      JSON.stringify(activeConfigTiers.map((t) => ({ id: t.tierId, l1: t.level1Percent, l5: t.level5Percent })));
 
     const changed =
       minWithdrawalInput !== config.minWithdrawalLimit ||
@@ -73,13 +92,17 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
   }, [minWithdrawalInput, tiersInput, config]);
 
   const handleTierPercentageChange = (
-    durationMonths: number,
+    tierIdentifier: string | number,
     field: "level1Percent" | "level5Percent",
     val: number
   ) => {
     setTiersInput((prev) =>
       prev.map((t) => {
-        if (t.durationMonths !== durationMonths) return t;
+        const match =
+          t.tierId === tierIdentifier ||
+          t.planId === tierIdentifier ||
+          t.durationMonths === tierIdentifier;
+        if (!match) return t;
         const updatedL1 = field === "level1Percent" ? val : t.level1Percent;
         const updatedL5 = field === "level5Percent" ? val : t.level5Percent;
         return {
@@ -93,8 +116,24 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
   };
 
   const handleResetTierDefaults = () => {
+    try {
+      const activePlans = getActiveSubscriptionPlans();
+      if (activePlans && activePlans.length > 0) {
+        const resetTiers = activePlans.map(createDefaultTierForPlan);
+        const maxDur = Math.max(...resetTiers.map((t) => t.durationMonths || 1), 12);
+        const finalTiers = resetTiers.map((t) => ({
+          ...t,
+          isMaxVip: t.durationMonths === maxDur || t.durationMonths >= 12,
+        }));
+        setTiersInput(finalTiers);
+        onToast?.(`Tier multipliers reset for ${finalTiers.length} active plans! 🔄`, "info");
+        return;
+      }
+    } catch {
+      // fallback
+    }
     setTiersInput(DEFAULT_PLAN_REFERRAL_TIERS);
-    onToast?.("Tier multipliers reset to defaults: 22/15, 27/20, 32/25, 37/30 🔄", "info");
+    onToast?.("Tier multipliers reset to platform defaults! 🔄", "info");
   };
 
   const handleSave = async () => {
@@ -121,8 +160,8 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
     setIsSaving(true);
     try {
       const vipTier =
-        tierValidation.sanitizedTiers.find((t) => t.durationMonths === 12) ||
-        tierValidation.sanitizedTiers[3];
+        tierValidation.sanitizedTiers.find((t) => t.isMaxVip) ||
+        tierValidation.sanitizedTiers[tierValidation.sanitizedTiers.length - 1];
 
       const updated: ReferralCommissionConfig = {
         ...config,
@@ -130,7 +169,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
         level5Reward: Math.round(level5Input),
         minWithdrawalLimit: Math.round(minWithdrawalInput),
         planTiers: tierValidation.sanitizedTiers,
-        promoTagline: `Refer & Earn: Up to ${vipTier.level1Percent}% Direct + ${vipTier.level5Percent}% Team Royalty (Max ${vipTier.totalPercent}%) on 12-Month Plan!`,
+        promoTagline: `Refer & Earn: Up to ${vipTier.level1Percent}% Direct + ${vipTier.level5Percent}% Team Royalty (Max ${vipTier.totalPercent}%) on ${vipTier.label}!`,
         updatedBy: "Admin",
       };
 
@@ -144,13 +183,13 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
       if (cloudRes.success) {
         setSyncStatus(`Cloud Synced: ${new Date().toLocaleTimeString()}`);
         onToast?.(
-          `Commission & Tier Multipliers Saved to Cloud! ☁️ (VIP: ${vipTier.level1Percent}% L1 + ${vipTier.level5Percent}% L5 = ${vipTier.totalPercent}% Cap)`,
+          `Commission & Tier Multipliers Saved to Cloud! ☁️ (${tierValidation.sanitizedTiers.length} Plans configured)`,
           "success"
         );
       } else {
         setSyncStatus("Saved locally (offline mode)");
         onToast?.(
-          `Commission rates & tier multipliers updated locally! (VIP: ${vipTier.level1Percent}% + ${vipTier.level5Percent}%)`,
+          `Commission rates & tier multipliers updated locally! (${tierValidation.sanitizedTiers.length} Plans)`,
           "info"
         );
       }
@@ -164,17 +203,37 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
   };
 
   const handleResetDefaults = async () => {
-    setLevel1Input(DEFAULT_REFERRAL_COMMISSION_CONFIG.level1Reward);
-    setLevel5Input(DEFAULT_REFERRAL_COMMISSION_CONFIG.level5Reward);
-    setMinWithdrawalInput(DEFAULT_REFERRAL_COMMISSION_CONFIG.minWithdrawalLimit);
-    setTiersInput(DEFAULT_PLAN_REFERRAL_TIERS);
-    saveReferralCommissionConfig(DEFAULT_REFERRAL_COMMISSION_CONFIG);
-    setConfig(DEFAULT_REFERRAL_COMMISSION_CONFIG);
-    await saveCommissionConfigToCloud(DEFAULT_REFERRAL_COMMISSION_CONFIG);
-    setHasChanges(false);
-    setSyncStatus(`Reset to Defaults: Flat ₹50 + Standard Tiers (37%-67%)`);
-    onToast?.("Commission rates & tier multipliers restored to default! 🔄", "info");
-    if (onConfigSaved) onConfigSaved();
+    try {
+      const currentPlans = getActiveSubscriptionPlans();
+      const defaultTiers = currentPlans.map(createDefaultTierForPlan);
+      const resetCfg: ReferralCommissionConfig = {
+        ...DEFAULT_REFERRAL_COMMISSION_CONFIG,
+        planTiers: defaultTiers.length > 0 ? defaultTiers : DEFAULT_PLAN_REFERRAL_TIERS,
+      };
+      setLevel1Input(resetCfg.level1Reward);
+      setLevel5Input(resetCfg.level5Reward);
+      setMinWithdrawalInput(resetCfg.minWithdrawalLimit || 50);
+      setTiersInput(resetCfg.planTiers || DEFAULT_PLAN_REFERRAL_TIERS);
+      saveReferralCommissionConfig(resetCfg);
+      setConfig(resetCfg);
+      await saveCommissionConfigToCloud(resetCfg);
+      setHasChanges(false);
+      setSyncStatus(`Reset to Platform Defaults (${defaultTiers.length} Plans)`);
+      onToast?.("Commission rates & tier multipliers restored to default! 🔄", "info");
+      if (onConfigSaved) onConfigSaved();
+    } catch {
+      setLevel1Input(DEFAULT_REFERRAL_COMMISSION_CONFIG.level1Reward);
+      setLevel5Input(DEFAULT_REFERRAL_COMMISSION_CONFIG.level5Reward);
+      setMinWithdrawalInput(DEFAULT_REFERRAL_COMMISSION_CONFIG.minWithdrawalLimit);
+      setTiersInput(DEFAULT_PLAN_REFERRAL_TIERS);
+      saveReferralCommissionConfig(DEFAULT_REFERRAL_COMMISSION_CONFIG);
+      setConfig(DEFAULT_REFERRAL_COMMISSION_CONFIG);
+      await saveCommissionConfigToCloud(DEFAULT_REFERRAL_COMMISSION_CONFIG);
+      setHasChanges(false);
+      setSyncStatus(`Reset to Defaults: Flat ₹50 + Standard Tiers (37%-67%)`);
+      onToast?.("Commission rates & tier multipliers restored to default! 🔄", "info");
+      if (onConfigSaved) onConfigSaved();
+    }
   };
 
   const handleSyncCloud = async () => {
@@ -215,11 +274,11 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
                 Commission &amp; Payout Policy Configurator
               </h3>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-bold border border-indigo-100">
-                Plan Multipliers (22% - 67%) Live Control
+                Multipliers ({tiersInput[0]?.totalPercent || 37}% - {tiersInput[tiersInput.length - 1]?.totalPercent || 67}%) • {tiersInput.length} Plans
               </span>
             </div>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              Set direct income (Level 1) and team royalty (Level 5) multipliers across 1M, 3M, 6M, and 12M plans.
+              Set direct income (Level 1) and team royalty (Level 5) multipliers dynamically across all active subscription plans.
             </p>
           </div>
         </div>
@@ -241,7 +300,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
             type="button"
             onClick={handleResetDefaults}
             className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-700 text-slate-600 text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-            title="Reset to default tier multipliers (22%-67%)"
+            title="Reset to default tier multipliers across active plans"
           >
             <RotateCcw className="w-3 h-3" />
             <span>Reset Defaults</span>
@@ -249,7 +308,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
         </div>
       </div>
 
-      {/* Plan Referral Tier Multipliers Matrix (1M, 3M, 6M, 12M) */}
+      {/* Plan Referral Tier Multipliers Dynamic Matrix */}
       <div className="space-y-2.5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
           <div className="flex items-center gap-2">
@@ -261,12 +320,12 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
                 <h4 className="text-xs sm:text-sm font-bold text-slate-900">
                   Plan Referral Tier Multipliers (Live %)
                 </h4>
-                <span className="text-[9.5px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
-                  Duration-Based
+                <span className="text-[9.5px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                  {tiersInput.length} Active Plans Connected
                 </span>
               </div>
               <p className="text-[10.5px] text-slate-500">
-                Direct (L1 %) and Team Royalty (L5 %) applied automatically to student referrals based on their active plan duration.
+                Direct (L1 %) and Team Royalty (L5 %) applied automatically to student referrals. New plans created in Plan &amp; Pricing appear here dynamically.
               </p>
             </div>
           </div>
@@ -275,23 +334,26 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
             type="button"
             onClick={handleResetTierDefaults}
             className="self-start sm:self-auto text-[10.5px] font-bold text-[#796AEF] hover:text-indigo-800 flex items-center gap-1 px-2 py-1 rounded-md hover:bg-indigo-50 transition-colors cursor-pointer"
-            title="Reset tier percentages to 22/15, 27/20, 32/25, 37/30"
+            title="Reset tier percentages to defaults across all active plans"
           >
             <RotateCcw className="w-3 h-3" />
-            <span>Reset Tiers (22/15 - 37/30)</span>
+            <span>Reset Tiers ({tiersInput[0]?.level1Percent || 22}/{tiersInput[0]?.level5Percent || 15} - {tiersInput[tiersInput.length - 1]?.level1Percent || 37}/{tiersInput[tiersInput.length - 1]?.level5Percent || 30})</span>
           </button>
         </div>
 
-        {/* 4 Cards Grid for 1M, 3M, 6M, 12M */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+        {/* Dynamic Responsive Grid for all Active Plans */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
           {tiersInput.map((tier) => {
             const totalCap = (Number(tier.level1Percent) || 0) + (Number(tier.level5Percent) || 0);
             const companyMargin = Math.max(0, 100 - totalCap);
-            const isVip = tier.durationMonths === 12;
+            const isVip = Boolean(tier.isMaxVip || tier.durationMonths >= 12);
+            const price = tier.priceINR || 0;
+            const l1Est = price > 0 ? Math.round((price * (Number(tier.level1Percent) || 0)) / 100) : null;
+            const l5Est = price > 0 ? Math.round((price * (Number(tier.level5Percent) || 0)) / 100) : null;
 
             return (
               <div
-                key={tier.tierId}
+                key={tier.tierId || `tier_${tier.durationMonths}`}
                 className={`p-3 rounded-xl border transition-all relative space-y-2.5 ${
                   isVip
                     ? "bg-gradient-to-b from-amber-50/50 to-white border-amber-300/80 shadow-2xs"
@@ -300,18 +362,32 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
               >
                 {/* Card Header */}
                 <div className="flex items-center justify-between gap-1">
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
                     {isVip ? (
                       <Crown className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                     ) : (
-                      <span className="w-2 h-2 rounded-full bg-[#796AEF]" />
+                      <span className="w-2 h-2 rounded-full bg-[#796AEF] shrink-0" />
                     )}
-                    <span className="text-xs font-black text-slate-900 truncate">
-                      {tier.label}
-                    </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs font-black text-slate-900 truncate">
+                          {tier.label}
+                        </span>
+                        {price > 0 && (
+                          <span className="text-[9px] font-bold text-slate-600 bg-slate-200/70 px-1 py-0.2 rounded font-mono">
+                            ₹{price}
+                          </span>
+                        )}
+                      </div>
+                      {tier.planName && tier.planName !== tier.label && (
+                        <p className="text-[9.5px] text-slate-500 truncate leading-tight">
+                          {tier.planName}
+                        </p>
+                      )}
+                    </div>
                   </div>
                   <span
-                    className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${
+                    className={`text-[8.5px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${
                       isVip
                         ? "bg-amber-200/80 text-amber-900"
                         : "bg-indigo-100 text-indigo-800"
@@ -336,7 +412,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
                         value={tier.level1Percent}
                         onChange={(e) =>
                           handleTierPercentageChange(
-                            tier.durationMonths,
+                            tier.tierId || tier.planId || tier.durationMonths,
                             "level1Percent",
                             Number(e.target.value)
                           )
@@ -347,6 +423,11 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
                         %
                       </span>
                     </div>
+                    {l1Est !== null && (
+                      <div className="text-[9px] text-emerald-700 font-bold font-mono text-center">
+                        ≈ ₹{l1Est}/sale
+                      </div>
+                    )}
                   </div>
 
                   {/* Level 5 (Team Royalty %) */}
@@ -362,7 +443,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
                         value={tier.level5Percent}
                         onChange={(e) =>
                           handleTierPercentageChange(
-                            tier.durationMonths,
+                            tier.tierId || tier.planId || tier.durationMonths,
                             "level5Percent",
                             Number(e.target.value)
                           )
@@ -373,6 +454,11 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
                         %
                       </span>
                     </div>
+                    {l5Est !== null && (
+                      <div className="text-[9px] text-indigo-700 font-bold font-mono text-center">
+                        ≈ ₹{l5Est}/sale
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -444,7 +530,7 @@ export const AdminCommissionConfigCard: React.FC<AdminCommissionConfigCardProps>
           <span>
             Active Formula:{" "}
             <strong>
-              Tiers: {tiersInput[0]?.totalPercent || 37}% (1M) to {tiersInput[3]?.totalPercent || 67}% (12M VIP)
+              Tiers: {tiersInput[0]?.totalPercent || 37}% ({tiersInput[0]?.label || "Base"}) to {tiersInput[tiersInput.length - 1]?.totalPercent || 67}% ({tiersInput[tiersInput.length - 1]?.label || "VIP"}) • {tiersInput.length} Plans Active
             </strong>{" "}
             • Min Payout: ₹{minWithdrawalInput}
           </span>

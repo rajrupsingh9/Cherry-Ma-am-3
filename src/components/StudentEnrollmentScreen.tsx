@@ -27,6 +27,7 @@ import {
   Smartphone,
   Award,
   Gift,
+  Clock,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { getTranslations } from "../utils/i18n";
@@ -40,12 +41,18 @@ import {
   SubscriptionPlan,
   SubscriptionState,
   loadSubscriptionState,
+  saveSubscriptionState,
   buildDynamicUpiUri,
   generateTransactionReference,
   activateSubscription,
   DEFAULT_RECEIVER_UPI_ID,
   DEFAULT_MERCHANT_NAME,
   matchProvisionedStudent,
+  recordStudentUtrPayment,
+  checkStudentApprovalStatus,
+  getStudentSubscriptions,
+  saveStudentSubscriptionToCloud,
+  StudentSubscriptionRecord,
 } from "../utils/subscriptionStore";
 import {
   addStoredApiKey,
@@ -145,6 +152,9 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
   // Initialize step
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(() => {
     if (!isGoogleAuthenticated) return "google_login";
+    if (initialDetails?.name && initialDetails.name.trim().length >= 2) {
+      return "payment_149";
+    }
     return "profile_setup";
   });
 
@@ -184,7 +194,6 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
     const handleSubUpdated = (e: any) => {
       const updated = e.detail || loadSubscriptionState();
       setSubState(updated);
-      onSubscriptionUpdated?.(updated);
     };
     window.addEventListener("cherry_plans_updated", handlePlansUpdated);
     window.addEventListener("cherry_upi_config_updated", handleUpiUpdated);
@@ -194,7 +203,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       window.removeEventListener("cherry_upi_config_updated", handleUpiUpdated);
       window.removeEventListener("cherry_subscription_updated", handleSubUpdated);
     };
-  }, [onSubscriptionUpdated]);
+  }, []);
 
   const [selectedPlanId, setSelectedPlanId] = useState<string>(() => {
     const popular = plans.find((p) => p.popular);
@@ -216,6 +225,62 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
   const [userUtrInput, setUserUtrInput] = useState("");
   const [isActivatingPayment, setIsActivatingPayment] = useState(false);
   const [copiedUpi, setCopiedUpi] = useState(false);
+  const [submittedPendingRecord, setSubmittedPendingRecord] = useState<StudentSubscriptionRecord | null>(() => {
+    try {
+      const currentUid = activeAuthUser?.uid || propUser?.uid;
+      const currentEmail = activeAuthUser?.email || propUser?.email;
+      const list = getStudentSubscriptions();
+      const found = list.find((s) => {
+        if (currentUid && (s.id === currentUid || (s as any).userId === currentUid)) return true;
+        if (currentEmail && s.studentEmail && s.studentEmail.toLowerCase() === currentEmail.toLowerCase()) return true;
+        return false;
+      });
+      if (found && found.status === "pending_verification" && !found.isPro) {
+        return found;
+      }
+    } catch (_) {}
+    return null;
+  });
+  const [isCheckingApproval, setIsCheckingApproval] = useState(false);
+
+  // Sync pending status or realtime approval if updated in background or by Admin
+  useEffect(() => {
+    const currentUid = authedUser?.uid || activeAuthUser?.uid || propUser?.uid;
+    const currentEmail = authedUser?.email || activeAuthUser?.email || propUser?.email;
+    const currentName = name || authedUser?.displayName || activeAuthUser?.displayName;
+    if (!currentUid && !currentEmail && !currentName) return;
+
+    const checkApproval = () => {
+      const list = getStudentSubscriptions();
+      const found = list.find((s) => {
+        if (currentUid && (s.id === currentUid || (s as any).userId === currentUid)) return true;
+        if (currentEmail && s.studentEmail && s.studentEmail.toLowerCase() === currentEmail.toLowerCase()) return true;
+        if (currentName && s.studentName && s.studentName.toLowerCase() === currentName.toLowerCase()) return true;
+        return false;
+      });
+
+      if (found) {
+        if (found.isPro && found.status === "active") {
+          setSubmittedPendingRecord(null);
+          const current = loadSubscriptionState();
+          setSubState(current);
+        } else if (found.status === "pending_verification" && !found.isPro) {
+          setSubmittedPendingRecord(found);
+          if (found.utrNumber && !userUtrInput) {
+            setUserUtrInput(found.utrNumber);
+          }
+        }
+      }
+    };
+
+    checkApproval();
+    window.addEventListener("cherry_student_subscriptions_updated", checkApproval);
+    window.addEventListener("cherry_subscription_updated", checkApproval);
+    return () => {
+      window.removeEventListener("cherry_student_subscriptions_updated", checkApproval);
+      window.removeEventListener("cherry_subscription_updated", checkApproval);
+    };
+  }, [authedUser, activeAuthUser, propUser, name]);
 
   // API Key State
   const [apiKeyInput, setApiKeyInput] = useState(() => getActiveApiKey());
@@ -337,13 +402,14 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       .catch((err) => console.error("Error generating UPI QR code:", err));
   }, [currentStep, subState, specialPlan.priceINR, activeTxnRef, name]);
 
-  // STEP 1: Direct Session Helper (Fallback for sandbox/preview domains & direct phone sign-in)
+  // STEP 1: Direct Session Helper (For enrolled student mobile lookup)
   const handleDirectStudentLogin = async (customEmailOrPhone?: string) => {
-    const input = (customEmailOrPhone || "onlinework0876@gmail.com").trim();
+    const input = (customEmailOrPhone || "").trim();
+    if (!input) return;
     const isPhone = /^\d{10}$/.test(input.replace(/\D/g, ""));
     const cleanPhone = isPhone ? input.replace(/\D/g, "") : "";
     const isEmail = input.includes("@");
-    const isSuperAdmin = input.toLowerCase() === "onlinework0876@gmail.com";
+    const isSuperAdmin = isAdminEmail(input);
 
     // 1. Check if this student was provisioned by Admin
     const matchedProvision = await matchProvisionedStudent({
@@ -379,9 +445,27 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
       return;
     }
 
-    const studentName = name.trim() || (isSuperAdmin ? "Super Admin" : (isEmail ? (input.split("@")[0] || "Student") : `Student ${cleanPhone.slice(-4)}`));
+    if (isSuperAdmin) {
+      const adminUser = {
+        uid: "admin_" + input.replace(/[^a-zA-Z0-9]/g, "_"),
+        displayName: "Admin",
+        email: input,
+        phoneNumber: cleanPhone || undefined,
+        isAnonymous: false,
+        photoURL: null,
+      };
+      try {
+        localStorage.setItem("local_active_user", JSON.stringify(adminUser));
+      } catch (_) {}
+      setAuthedUser(adminUser as any);
+      onUserAuthenticated?.(adminUser);
+      onToast?.(`Admin Access Granted: ${input}! Redirecting to Admin Dashboard 👑`, "success");
+      return;
+    }
+
+    const studentName = name.trim() || (isEmail ? (input.split("@")[0] || "Student") : `Student ${cleanPhone.slice(-4)}`);
     const studentUser = {
-      uid: isSuperAdmin ? "admin_super_0876" : (cleanPhone ? `phone_${cleanPhone}` : ("student_" + Math.random().toString(36).substring(2, 9))),
+      uid: cleanPhone ? `phone_${cleanPhone}` : ("student_" + Math.random().toString(36).substring(2, 9)),
       displayName: studentName,
       email: isEmail ? input : `${cleanPhone || "student"}@cherry.ai`,
       phoneNumber: cleanPhone || undefined,
@@ -397,9 +481,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
     }
     onUserAuthenticated?.(studentUser);
     onToast?.(
-      isSuperAdmin
-        ? `Logged in as ${input}! Super Admin Verified 🛡️✨`
-        : `Logged in as ${studentName}! Profile verified 🧑‍🎓✨`,
+      `Logged in as ${studentName}! Profile verified 🧑‍🎓✨`,
       "success"
     );
     setTimeout(() => {
@@ -407,7 +489,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
     }, 300);
   };
 
-  // STEP 1: Handle Google Sign-In (Mandatory)
+  // STEP 1: Handle Google Sign-In (Mandatory for both Students & Admins)
   const handleGoogleLogin = async () => {
     setIsLoggingIn(true);
     try {
@@ -426,12 +508,11 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
         setName(loggedUser.displayName);
       }
 
-      // Check if Admin already provisioned Pro access for this user
+      // Check if Admin already provisioned Pro access for this user by exact UID, email, or phone
       const provisionCheck = await matchProvisionedStudent({
         uid: loggedUser.uid,
         email: loggedUser.email || undefined,
         phone: (loggedUser as any).phoneNumber || undefined,
-        displayName: loggedUser.displayName || undefined,
       });
 
       if (provisionCheck && provisionCheck.profileData && provisionCheck.subscription) {
@@ -452,7 +533,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
         `Google account verified: ${loggedUser.displayName || loggedUser.email}! 🧑‍🎓✨`,
         "success"
       );
-      // Smoothly advance to Step 2
+      // Smoothly advance to Step 2 for Students
       setTimeout(() => {
         setCurrentStep("profile_setup");
       }, 400);
@@ -474,24 +555,23 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
 
       if (isDomainError) {
         console.warn(
-          "Firebase Auth unauthorized domain on preview environment. Activating direct student authentication."
+          "Firebase Auth unauthorized domain on preview environment."
         );
         onToast?.(
-          "Firebase domain authorization pending: Activated verified Student session! 🎒✨",
-          "info"
+          "Firebase domain authorization pending: Please authorize this URL in Firebase Console.",
+          "warning"
         );
-        handleDirectStudentLogin("onlinework0876@gmail.com");
       } else if (isPopupClosed) {
         // User closed or dismissed the popup window - harmless cancellation
         console.info("Google Sign-In popup was closed by user.");
         onToast?.(
-          "Google sign-in was cancelled. Click again when ready, or continue with direct login.",
+          "Google sign-in was cancelled. Click again when ready.",
           "info"
         );
       } else if (isPopupBlocked) {
         console.warn("Google Sign-In popup was blocked by browser.");
         onToast?.(
-          "Sign-in popup was blocked by your browser. Please allow popups or use direct login.",
+          "Sign-in popup was blocked by your browser. Please allow popups.",
           "warning"
         );
       } else {
@@ -573,33 +653,87 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
     setCurrentStep("payment_149");
   };
 
-  // STEP 3: Handle Payment Activation for ₹149
-  const handleConfirmPayment = () => {
+  // STEP 3: Handle Payment UTR Submission for Admin Approval
+  const handleConfirmPayment = async () => {
     const cleanUtr = userUtrInput.trim();
-    if (cleanUtr.length > 0 && cleanUtr.length < 6) {
-      onToast?.("Please enter a valid 12-digit UPI Reference / UTR Number.", "warning");
+    if (!cleanUtr || cleanUtr.length < 6) {
+      onToast?.("Please enter a valid 12-digit UPI Reference / UTR Number from your payment app.", "warning");
       return;
     }
 
     setIsActivatingPayment(true);
-    setTimeout(() => {
-      const result = activateSubscription({
-        planId: specialPlan.id,
-        referenceId: cleanUtr || `UTR-${activeTxnRef}`,
-        studentName: name || "Student",
-        customUpiId: subState.customUpiReceiverId,
+    try {
+      const targetUid = authedUser?.uid || activeAuthUser?.uid || propUser?.uid || `std_${Date.now()}`;
+      const targetEmail = authedUser?.email || activeAuthUser?.email || propUser?.email || undefined;
+      const targetName = name.trim() || authedUser?.displayName || activeAuthUser?.displayName || "Student";
+
+      const record = recordStudentUtrPayment({
+        studentId: targetUid,
+        studentName: targetName,
+        studentEmail: targetEmail,
+        grade: grade || "Class 10",
+        board: board || "CBSE Board",
+        subject: "Science",
+        mediumOfLearning: mediumOfLearning || "Hinglish",
+        planId: selectedPlan.id,
+        amountINR: selectedPlan.priceINR,
+        utrNumber: cleanUtr,
+        status: "pending_verification",
       });
 
-      setSubState(result.state);
-      onSubscriptionUpdated?.(result.state);
+      // Save directly to Firestore so Admin sees it in real time
+      await saveStudentSubscriptionToCloud(record);
+
+      setSubmittedPendingRecord(record);
       setIsActivatingPayment(false);
 
-      triggerCelebrationConfetti();
-      onToast?.(`🎉 ₹${specialPlan.priceINR} ${specialPlan.name} Activated for ${specialPlan.durationLabel || `${specialPlan.durationMonths} Months`}!`, "success");
+      onToast?.(
+        `✅ Payment verification request submitted to Admin! 📩 Verification is pending. Admin will verify your UTR in the Admin Dashboard and approve your Pro access.`,
+        "success"
+      );
+    } catch (err) {
+      console.error("Error submitting UTR request:", err);
+      setIsActivatingPayment(false);
+      onToast?.("Could not submit UTR verification request. Please try again.", "error");
+    }
+  };
 
-      // Advance to Step 4: API Key Setup
-      setCurrentStep("api_key_setup");
-    }, 1000);
+  // Helper to check if Admin has approved the request
+  const handleCheckApprovalStatus = async () => {
+    setIsCheckingApproval(true);
+    try {
+      const currentUid = authedUser?.uid || activeAuthUser?.uid || propUser?.uid;
+      const currentEmail = authedUser?.email || activeAuthUser?.email || propUser?.email || undefined;
+      const currentName = name.trim() || authedUser?.displayName || activeAuthUser?.displayName;
+
+      const res = await checkStudentApprovalStatus({
+        studentId: currentUid,
+        studentEmail: currentEmail,
+        studentName: currentName,
+      });
+
+      if (res.isApproved && res.record) {
+        setSubmittedPendingRecord(null);
+        triggerCelebrationConfetti();
+        onToast?.("🎉 Payment Approved by Admin! Pro access is now active.", "success");
+        // Also update local state
+        const updatedSub = loadSubscriptionState();
+        setSubState(updatedSub);
+        onSubscriptionUpdated?.(updatedSub);
+        // Advance to Step 4: API Key Setup
+        setCurrentStep("api_key_setup");
+      } else if (res.record?.status === "pending_verification") {
+        setSubmittedPendingRecord(res.record);
+        onToast?.("⏳ Verification is still pending. Admin has not approved this request yet.", "info");
+      } else {
+        onToast?.("No pending approval found. Please submit your UTR reference.", "info");
+      }
+    } catch (err) {
+      console.warn("Approval status check error:", err);
+      onToast?.("Could not check approval status right now. Please try again.", "error");
+    } finally {
+      setIsCheckingApproval(false);
+    }
   };
 
   const handleOpenUpiIntent = (appScheme?: "gpay" | "phonepe" | "paytm") => {
@@ -692,7 +826,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
   const STEPS_NAV = [
     { id: "google_login", label: "1. Google Login", short: "Login" },
     { id: "profile_setup", label: "2. Profile", short: "Profile" },
-    { id: "payment_149", label: `3. ₹${specialPlan.priceINR} Pro`, short: "Payment" },
+    { id: "payment_149", label: "3. Choose Plan & Pay", short: "Plans" },
     { id: "api_key_setup", label: "4. API Key", short: "API Key" },
     { id: "launch_app", label: "5. Ready", short: "Use App" },
   ];
@@ -727,7 +861,10 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                 <ArrowLeft className="w-4 h-4" />
               </button>
             ) : (
-              <div className="w-8 h-8 rounded-xl bg-white border border-slate-200/90 text-[#796AEF] flex items-center justify-center shadow-2xs">
+              <div
+                className="w-8 h-8 rounded-xl bg-white border border-slate-200/90 text-[#796AEF] flex items-center justify-center shadow-2xs select-none"
+                title="Cherry AI"
+              >
                 <span className="text-base">🍒</span>
               </div>
             )}
@@ -747,10 +884,17 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
           </div>
 
           <div className="flex items-center gap-1.5">
-            <span className="text-[9.5px] font-bold text-[#796AEF] bg-indigo-50 border border-indigo-100/80 px-2.5 py-1 rounded-full flex items-center gap-1 shadow-2xs">
-              <Award className="w-3 h-3 text-[#796AEF]" />
-              <span>₹{specialPlan.priceINR} / {specialPlan.durationLabel || `${specialPlan.durationMonths} Months`}</span>
-            </span>
+            {currentStep === "payment_149" ? (
+              <span className="text-[9.5px] font-bold text-[#796AEF] bg-indigo-50 border border-indigo-100/80 px-2.5 py-1 rounded-full flex items-center gap-1 shadow-2xs">
+                <Crown className="w-3 h-3 text-amber-500" />
+                <span>Selected: ₹{specialPlan.priceINR} ({specialPlan.durationLabel || `${specialPlan.durationMonths} Mo`})</span>
+              </span>
+            ) : (
+              <span className="text-[9.5px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100/80 px-2.5 py-1 rounded-full flex items-center gap-1 shadow-2xs">
+                <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                <span>Verified Portal</span>
+              </span>
+            )}
           </div>
         </header>
 
@@ -772,14 +916,14 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
               >
                 <div>
                   <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-50 border border-indigo-100/80 text-[#796AEF] text-[10px] font-bold uppercase tracking-wider mb-1.5 shadow-2xs">
-                    <Lock className="w-3 h-3 text-[#796AEF]" />
-                    <span>Mandatory Sign-In / अनिवार्य लॉगिन</span>
+                    <Sparkles className="w-3 h-3 text-[#796AEF]" />
+                    <span>Welcome Aspirant • छात्र प्रवेश</span>
                   </div>
                   <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">
-                    Google Sign-In Required
+                    Welcome to Cherry AI Classroom
                   </h2>
                   <p className="text-xs text-slate-600 font-medium mt-1">
-                    Please log in with your Google account to create your verified student profile, save your study progress, and access the classroom.
+                    Sign in with your Google account to create your verified student profile, save notes, and start interactive learning.
                   </p>
                 </div>
 
@@ -824,13 +968,32 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                     </div>
                   ) : (
                     <div className="space-y-3.5">
-                      <div className="flex items-center gap-3 p-3 bg-indigo-50/60 rounded-xl border border-indigo-100/80">
-                        <div className="w-9 h-9 rounded-xl bg-[#796AEF] text-white flex items-center justify-center shrink-0 shadow-2xs">
-                          <ShieldCheck className="w-5 h-5" />
+                      {/* Learning Highlights */}
+                      <div className="grid grid-cols-2 gap-2 p-2.5 bg-slate-50/90 rounded-xl border border-slate-200/70 text-[11px]">
+                        <div className="flex items-center gap-2 text-slate-700 font-medium">
+                          <span className="w-5 h-5 rounded-md bg-indigo-50 text-[#796AEF] flex items-center justify-center font-bold text-[11px] shrink-0">
+                            🎙️
+                          </span>
+                          <span>Voice AI Mentor</span>
                         </div>
-                        <p className="text-[11px] text-slate-700 font-medium leading-relaxed">
-                          Sign in to secure your student account, syllabus notes, test analytics, and referral wallet safely across all your devices.
-                        </p>
+                        <div className="flex items-center gap-2 text-slate-700 font-medium">
+                          <span className="w-5 h-5 rounded-md bg-indigo-50 text-[#796AEF] flex items-center justify-center font-bold text-[11px] shrink-0">
+                            📝
+                          </span>
+                          <span>Chalkboard Notes</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-slate-700 font-medium">
+                          <span className="w-5 h-5 rounded-md bg-indigo-50 text-[#796AEF] flex items-center justify-center font-bold text-[11px] shrink-0">
+                            ⚡
+                          </span>
+                          <span>Instant Doubts</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-slate-700 font-medium">
+                          <span className="w-5 h-5 rounded-md bg-indigo-50 text-[#796AEF] flex items-center justify-center font-bold text-[11px] shrink-0">
+                            🔒
+                          </span>
+                          <span>Cloud Sync</span>
+                        </div>
                       </div>
 
                       <button
@@ -869,17 +1032,19 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                         )}
                       </button>
 
-                      {/* Direct Phone / Enrolled Student Quick Login */}
-                      <div className="pt-1 border-t border-slate-100 space-y-2">
+                      {/* Subtle Help / Direct Login Options */}
+                      <div className="pt-2 border-t border-slate-100 space-y-2">
                         {!showPhoneLookup ? (
-                          <button
-                            type="button"
-                            onClick={() => setShowPhoneLookup(true)}
-                            className="w-full py-2 px-3 rounded-xl bg-indigo-50/70 hover:bg-indigo-100/70 text-[#796AEF] border border-indigo-200/80 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                          >
-                            <Smartphone className="w-4 h-4 text-[#796AEF]" />
-                            <span>Enrolled by Admin? Login with Mobile Number</span>
-                          </button>
+                          <div className="flex items-center justify-center px-1">
+                            <button
+                              type="button"
+                              onClick={() => setShowPhoneLookup(true)}
+                              className="text-slate-500 hover:text-[#796AEF] text-[11px] font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <Smartphone className="w-3.5 h-3.5 text-slate-400" />
+                              <span>Enrolled student? Login with mobile</span>
+                            </button>
+                          </div>
                         ) : (
                           <div className="p-3 bg-slate-50 rounded-xl border border-indigo-200 space-y-2.5">
                             <div className="flex items-center justify-between">
@@ -890,7 +1055,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                               <button
                                 type="button"
                                 onClick={() => setShowPhoneLookup(false)}
-                                className="text-[10px] font-bold text-slate-400 hover:text-slate-600"
+                                className="text-[10px] font-bold text-slate-400 hover:text-slate-600 cursor-pointer"
                               >
                                 Cancel
                               </button>
@@ -939,20 +1104,10 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                         )}
                       </div>
 
-                      <div className="relative flex items-center justify-center pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => handleDirectStudentLogin("onlinework0876@gmail.com")}
-                          className="w-full py-2.5 px-3 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 hover:border-[#796AEF] font-semibold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                        >
-                          <ShieldCheck className="w-4 h-4 text-[#796AEF]" />
-                          <span>Direct Super Admin Access (onlinework0876@gmail.com)</span>
-                        </button>
+                      <div className="flex items-center justify-center gap-1.5 pt-1 text-[10px] text-slate-400">
+                        <Lock className="w-3 h-3 text-slate-400" />
+                        <span>Official Google OAuth Authentication • Encrypted & Secure</span>
                       </div>
-
-                      <p className="text-[10px] text-center text-slate-500">
-                        🔒 Official Google OAuth Authentication • No guest mode allowed
-                      </p>
                     </div>
                   )}
                 </div>
@@ -1246,33 +1401,43 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                 <div>
                   <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-50 border border-indigo-100/80 text-[#796AEF] text-[10px] font-bold uppercase tracking-wider mb-1.5 shadow-2xs">
                     <Crown className="w-3 h-3 text-amber-500" />
-                    <span>Affordable Student AI Access / छात्र योजना</span>
+                    <span>Choose Your Pro Plan / सभी उपलब्ध प्लान्स</span>
                   </div>
                   <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">
-                    Choose Your Pro Plan
+                    Select Your Learning Pass
                   </h2>
                   <p className="text-xs text-slate-600 font-medium mt-1">
-                    Select a plan that fits your study goals. 1-time UPI payment with no recurring automatic charges.
+                    Choose any plan below. 1-time direct UPI payment with zero recurring charges or hidden fees.
                   </p>
                 </div>
 
                 {/* DYNAMIC SUBSCRIPTION PLAN SELECTION CARDS */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 px-0.5">
-                    <span>Available Plans ({plans.length})</span>
-                    <span className="text-[10px] text-[#796AEF] font-semibold">Tap to select</span>
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-[#796AEF]" />
+                      <span>Available Plans ({plans.length})</span>
+                    </span>
+                    <span className="text-[10px] text-[#796AEF] font-semibold bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100/70">
+                      Tap to choose
+                    </span>
                   </div>
 
                   <div className="grid grid-cols-1 gap-2.5">
                     {plans.map((p) => {
                       const isSelected = p.id === selectedPlan.id;
+                      const perMonthPrice =
+                        p.durationMonths && p.durationMonths > 1
+                          ? Math.round(p.priceINR / p.durationMonths)
+                          : null;
+
                       return (
                         <div
                           key={p.id}
                           onClick={() => setSelectedPlanId(p.id)}
                           className={`relative p-3.5 rounded-2xl border transition-all cursor-pointer select-none text-left ${
                             isSelected
-                              ? "bg-indigo-50/40 border-[#796AEF] shadow-sm ring-2 ring-[#796AEF]/20"
+                              ? "bg-indigo-50/50 border-[#796AEF] shadow-sm ring-2 ring-[#796AEF]/25"
                               : "bg-white border-slate-200/90 hover:border-slate-300 shadow-2xs"
                           }`}
                         >
@@ -1280,7 +1445,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                           <div className="flex items-center justify-between gap-2 mb-1.5">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span
-                                className={`text-[9.5px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                                className={`text-[9.5px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full ${
                                   isSelected
                                     ? "bg-[#796AEF] text-white"
                                     : "bg-indigo-50 text-[#796AEF] border border-indigo-100/80"
@@ -1289,9 +1454,15 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                                 {p.durationLabel || `${p.durationMonths} Months`}
                               </span>
                               {p.popular && (
-                                <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                                <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
                                   <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
                                   <span>Most Popular</span>
+                                </span>
+                              )}
+                              {p.id === "semiannual_149" && !p.popular && (
+                                <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  <Sparkles className="w-2.5 h-2.5 text-emerald-600" />
+                                  <span>Launch Special</span>
                                 </span>
                               )}
                             </div>
@@ -1311,18 +1482,23 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                                 ₹{p.priceINR}
                               </span>
                               {p.discountPercent ? (
-                                <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded">
+                                <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
                                   {p.discountPercent}% OFF
                                 </span>
                               ) : null}
                             </div>
                           </div>
 
-                          {/* Plan Name & Tagline */}
+                          {/* Plan Name & Tagline & Per Month breakdown */}
                           <div className="flex items-start justify-between gap-2">
                             <div>
                               <h3 className="text-xs sm:text-sm font-black text-slate-900 flex items-center gap-1.5">
                                 <span>{p.name}</span>
+                                {perMonthPrice && (
+                                  <span className="text-[10px] text-slate-500 font-semibold bg-slate-100 px-1.5 py-0.2 rounded">
+                                    Just ₹{perMonthPrice}/mo
+                                  </span>
+                                )}
                               </h3>
                               <p className="text-[11px] text-slate-600 font-medium line-clamp-1 mt-0.5">
                                 {p.tagline || `${p.durationLabel} unlimited Socratic tutoring pass`}
@@ -1378,9 +1554,11 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                       </h4>
                     </div>
                     <div className="text-right">
-                      <span className="text-xs text-slate-400 line-through mr-1 font-bold">
-                        ₹{selectedPlan.originalPriceINR || selectedPlan.priceINR * 2}
-                      </span>
+                      {selectedPlan.originalPriceINR && selectedPlan.originalPriceINR > selectedPlan.priceINR && (
+                        <span className="text-xs text-slate-400 line-through mr-1 font-bold">
+                          ₹{selectedPlan.originalPriceINR}
+                        </span>
+                      )}
                       <span className="text-xl font-black text-[#796AEF]">
                         ₹{selectedPlan.priceINR}
                       </span>
@@ -1408,123 +1586,200 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                   </div>
                 </div>
 
-                {/* Already active banner */}
-                {subState.isPro ? (
-                  <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-center space-y-2">
-                    <div className="flex items-center justify-center gap-1.5 text-emerald-800 font-bold text-xs">
-                      <Award className="w-4 h-4 text-emerald-600" />
-                      <span>Active Pro Pass Detected ({subState.activePlanId || "Active"})!</span>
+                {/* Active Pro Pass Status (Informational) */}
+                {subState.isPro && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between gap-2 shadow-xs">
+                    <div className="flex items-center gap-2 text-emerald-800 font-bold text-xs text-left">
+                      <Award className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <div>
+                        <span className="block">Active Pro Pass: {subState.activePlanName || subState.activePlanId || "Active"}</span>
+                        <span className="text-[10px] text-emerald-600 font-normal">Choose any plan below to renew or upgrade</span>
+                      </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => setCurrentStep("api_key_setup")}
-                      className="w-full py-3 px-4 rounded-xl bg-[#796AEF] hover:bg-[#6858e0] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-98 transition-all"
+                      className="py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] shrink-0 cursor-pointer active:scale-95 transition-all flex items-center gap-1"
                     >
-                      <span>Proceed to Step 4: API Key Setup</span>
-                      <ArrowRight className="w-4 h-4" />
+                      <span>Skip to AI Key</span>
+                      <ArrowRight className="w-3 h-3" />
                     </button>
                   </div>
-                ) : (
-                  <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-3.5">
-                    {/* Method 1: Mobile 1-Tap UPI Apps */}
-                    <div className="space-y-1.5">
-                      <span className="text-[10.5px] font-bold uppercase tracking-wider text-slate-700 block">
-                        Method 1: Pay ₹{selectedPlan.priceINR} via 1-Tap Mobile UPI App
-                      </span>
-                      <div className="grid grid-cols-3 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenUpiIntent("gpay")}
-                          className="py-2.5 px-2 rounded-xl bg-slate-50 hover:bg-indigo-50/70 border border-slate-200 hover:border-[#796AEF] text-slate-800 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer active:scale-95"
-                        >
-                          <span>🔵 GPay</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenUpiIntent("phonepe")}
-                          className="py-2.5 px-2 rounded-xl bg-slate-50 hover:bg-indigo-50/70 border border-slate-200 hover:border-[#796AEF] text-slate-800 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer active:scale-95"
-                        >
-                          <span>🟣 PhonePe</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenUpiIntent("paytm")}
-                          className="py-2.5 px-2 rounded-xl bg-slate-50 hover:bg-indigo-50/70 border border-slate-200 hover:border-[#796AEF] text-slate-800 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer active:scale-95"
-                        >
-                          <span>🔷 Paytm</span>
-                        </button>
-                      </div>
+                )}
+
+                {/* Always show Payment Options for chosen plan */}
+                <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-3.5">
+                  {/* Method 1: Mobile 1-Tap UPI Apps */}
+                  <div className="space-y-1.5">
+                    <span className="text-[10.5px] font-bold uppercase tracking-wider text-slate-700 block">
+                      Method 1: Pay ₹{selectedPlan.priceINR} via 1-Tap Mobile UPI App
+                    </span>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenUpiIntent("gpay")}
+                        className="py-2.5 px-2 rounded-xl bg-slate-50 hover:bg-indigo-50/70 border border-slate-200 hover:border-[#796AEF] text-slate-800 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer active:scale-95"
+                      >
+                        <span>🔵 GPay</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenUpiIntent("phonepe")}
+                        className="py-2.5 px-2 rounded-xl bg-slate-50 hover:bg-indigo-50/70 border border-slate-200 hover:border-[#796AEF] text-slate-800 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer active:scale-95"
+                      >
+                        <span>🟣 PhonePe</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenUpiIntent("paytm")}
+                        className="py-2.5 px-2 rounded-xl bg-slate-50 hover:bg-indigo-50/70 border border-slate-200 hover:border-[#796AEF] text-slate-800 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer active:scale-95"
+                      >
+                        <span>🔷 Paytm</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Method 2: Dynamic QR Scan */}
+                  <div className="p-3.5 bg-slate-900 rounded-2xl border border-slate-800 text-white flex flex-col items-center justify-center text-center space-y-2.5 shadow-xs">
+                    <span className="text-[10px] font-mono text-emerald-400 font-bold uppercase tracking-wider">
+                      Method 2: Scan Dynamic QR for ₹{selectedPlan.priceINR}
+                    </span>
+
+                    <div className="p-2 bg-white rounded-xl shadow-lg flex items-center justify-center">
+                      {qrDataUrl ? (
+                        <img
+                          src={qrDataUrl}
+                          alt="UPI QR Code"
+                          className="w-36 h-36 object-contain rounded-lg"
+                        />
+                      ) : (
+                        <div className="w-36 h-36 flex items-center justify-center text-slate-400">
+                          <RefreshCw className="w-5 h-5 animate-spin" />
+                        </div>
+                      )}
                     </div>
 
-                    {/* Method 2: Dynamic QR Scan */}
-                    <div className="p-3.5 bg-slate-900 rounded-2xl border border-slate-800 text-white flex flex-col items-center justify-center text-center space-y-2.5 shadow-xs">
-                      <span className="text-[10px] font-mono text-emerald-400 font-bold uppercase tracking-wider">
-                        Method 2: Scan Dynamic QR with any UPI App
+                    <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 text-[11px] font-mono">
+                      <span className="text-slate-400">UPI ID:</span>
+                      <span className="text-amber-300 font-bold">
+                        {subState.customUpiReceiverId || DEFAULT_RECEIVER_UPI_ID}
                       </span>
-
-                      <div className="p-2 bg-white rounded-xl shadow-lg flex items-center justify-center">
-                        {qrDataUrl ? (
-                          <img
-                            src={qrDataUrl}
-                            alt="UPI QR Code"
-                            className="w-36 h-36 object-contain rounded-lg"
-                          />
+                      <button
+                        type="button"
+                        onClick={handleCopyUpiId}
+                        className="p-1 hover:text-white text-slate-400 cursor-pointer"
+                      >
+                        {copiedUpi ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
                         ) : (
-                          <div className="w-36 h-36 flex items-center justify-center text-slate-400">
-                            <RefreshCw className="w-5 h-5 animate-spin" />
-                          </div>
+                          <Copy className="w-3.5 h-3.5" />
                         )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* UTR Verification Submission & Pending Admin Approval Flow */}
+                  {submittedPendingRecord && submittedPendingRecord.status === "pending_verification" && !subState.isPro ? (
+                    <div className="bg-amber-50/90 border border-amber-200/90 rounded-2xl p-4 text-left space-y-3 shadow-xs">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                            <Clock className="w-4 h-4 animate-pulse" />
+                          </div>
+                          <div>
+                            <h4 className="text-xs font-black text-amber-950">
+                              Payment Request Sent to Admin
+                            </h4>
+                            <p className="text-[10.5px] text-amber-800 font-medium">
+                              व्यवस्थापक सत्यापन जारी है (Pending Admin Approval)
+                            </p>
+                          </div>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[9.5px] font-bold tracking-tight animate-pulse">
+                          Pending Review
+                        </span>
                       </div>
 
-                      <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 text-[11px] font-mono">
-                        <span className="text-slate-400">UPI ID:</span>
-                        <span className="text-amber-300 font-bold">
-                          {subState.customUpiReceiverId || DEFAULT_RECEIVER_UPI_ID}
-                        </span>
+                      <div className="bg-white/90 rounded-xl p-3 border border-amber-200/70 space-y-1.5 text-xs">
+                        <div className="flex justify-between items-center text-slate-600">
+                          <span className="text-[11px]">Selected Plan:</span>
+                          <span className="font-bold text-slate-900">{submittedPendingRecord.planName} (₹{submittedPendingRecord.amountINR})</span>
+                        </div>
+                        <div className="flex justify-between items-center text-slate-600">
+                          <span className="text-[11px]">Submitted UTR:</span>
+                          <span className="font-mono font-bold text-[#796AEF] bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                            {submittedPendingRecord.utrNumber}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-slate-600">
+                          <span className="text-[11px]">Submitted Time:</span>
+                          <span className="text-[11px] font-medium text-slate-500">{submittedPendingRecord.submittedAt || "Just now"}</span>
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-amber-900/90 leading-relaxed font-medium">
+                        Aapka payment UTR verification request Admin ke pas bhej diya gaya hai. Admin ise <strong>Admin Dashboard</strong> se verify karke approve karega. Jaise hi Admin approve karega, aapka Pro Pass turant activate ho jayega.
+                      </p>
+
+                      <div className="flex items-center gap-2 pt-1">
                         <button
                           type="button"
-                          onClick={handleCopyUpiId}
-                          className="p-1 hover:text-white text-slate-400 cursor-pointer"
+                          disabled={isCheckingApproval}
+                          onClick={handleCheckApprovalStatus}
+                          className="flex-1 py-2.5 px-3 rounded-xl bg-amber-600 hover:bg-amber-700 active:scale-95 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-all cursor-pointer disabled:opacity-60"
                         >
-                          {copiedUpi ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
+                          <RefreshCw className={`w-3.5 h-3.5 ${isCheckingApproval ? "animate-spin" : ""}`} />
+                          <span>{isCheckingApproval ? "Checking Status..." : "Check Approval Status 🔄"}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSubmittedPendingRecord(null);
+                          }}
+                          className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs transition-all cursor-pointer"
+                          title="Edit UTR or change plan"
+                        >
+                          Edit UTR
                         </button>
                       </div>
                     </div>
-
-                    {/* UTR Verification Input & Activation */}
+                  ) : (
                     <div className="space-y-2 pt-1">
-                      <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-700 block">
-                        Enter 12-Digit UPI UTR / Transaction Ref ID
-                      </label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-700 block">
+                          Enter 12-Digit UPI UTR / Transaction Ref ID
+                        </label>
+                        <span className="text-[10px] text-slate-400 font-medium">Admin approval required</span>
+                      </div>
                       <div className="flex gap-2">
                         <input
                           type="text"
                           value={userUtrInput}
                           onChange={(e) => setUserUtrInput(e.target.value)}
-                          placeholder="e.g. 423987654321 or Auto-verify"
+                          placeholder="e.g. 423987654321"
                           className="flex-1 bg-slate-50 border border-slate-200 focus:border-[#796AEF] focus:bg-white rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 outline-none"
                         />
                         <button
                           type="button"
-                          disabled={isActivatingPayment}
+                          disabled={isActivatingPayment || !userUtrInput.trim()}
                           onClick={handleConfirmPayment}
                           className="py-2.5 px-4 rounded-xl bg-[#796AEF] hover:bg-[#6858e0] text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer active:scale-95 transition-all disabled:opacity-60"
                         >
                           {isActivatingPayment ? (
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                           ) : (
-                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <ArrowRight className="w-3.5 h-3.5" />
                           )}
-                          <span>Confirm & Activate</span>
+                          <span>Submit for Admin Approval</span>
                         </button>
                       </div>
+                      <p className="text-[10.5px] text-slate-500 font-medium">
+                        UPI Payment complete karne ke bad UTR number yahan enter karke submit karein. Admin verification ke bad Pro Access activate hoga.
+                      </p>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </motion.div>
             )}
 

@@ -6,6 +6,7 @@
 // Authorized Admin Email Allowlist
 export const ADMIN_EMAILS: readonly string[] = [
   "onlinework0876@gmail.com", // Primary Super Admin
+  "nikhiliitjee.21@gmail.com", // Primary App Owner / Admin
 ];
 
 const LOCAL_ADMIN_EMAILS_KEY = "cherry_custom_admin_emails";

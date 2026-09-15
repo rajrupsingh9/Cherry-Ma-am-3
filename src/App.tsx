@@ -35,7 +35,7 @@ import { triggerCelebrationConfetti } from "./utils/confetti";
 import { smartMergeWhiteboardNotes } from "./utils/boardFilter";
 import { safeSavePastSessions, safeSetItem } from "./utils/safeStorage";
 import { saveActiveLearningContext } from "./utils/activeLearningStore";
-import { loadSubscriptionState, SubscriptionState, syncSubscriptionSettingsFromCloud, matchProvisionedStudent } from "./utils/subscriptionStore";
+import { loadSubscriptionState, SubscriptionState, syncSubscriptionSettingsFromCloud, matchProvisionedStudent, isStudentSubscribed, clearUserSubscriptionState, getInitialSubscriptionState } from "./utils/subscriptionStore";
 import { getActiveApiKey } from "./utils/geminiKeyStorage";
 import { isAdminEmail, getUserRole } from "./utils/adminConfig";
 import AdminDashboard from "./components/AdminDashboard";
@@ -724,12 +724,11 @@ export default function App() {
             addToast(`Cloud profile restored for ${data.name}! ☁️✨`, "success");
             setShowLoginModal(false);
           } else {
-            // Check if this student was manually onboarded / provisioned by Admin
+            // Check if this student was manually onboarded / provisioned by Admin (matched strictly by UID, email, or phone)
             const matchedProvision = await matchProvisionedStudent({
               uid: activeUser.uid,
               email: activeUser.email || undefined,
               phone: (activeUser as any).phoneNumber || undefined,
-              displayName: activeUser.displayName || undefined,
             });
 
             if (matchedProvision && matchedProvision.profileData && matchedProvision.subscription) {
@@ -752,7 +751,10 @@ export default function App() {
               }
               // Trigger onboarding flow for first-time Google sign-ins (ignores anonymous guest users & admin users)
               if (!activeUser.isAnonymous && !userIsAdmin) {
-                setShowOnboarding(true);
+                // If the user is on the enrollment screen, keep them on the enrollment screen so they complete Profile and Payment
+                if (!showEnrollmentScreen) {
+                  setShowOnboarding(true);
+                }
                 setShowLoginModal(false);
               }
             }
@@ -815,8 +817,15 @@ export default function App() {
       } catch (_) {}
 
       setShowOnboarding(false);
-      setCurrentScreen("syllabus"); 
-      addToast(`Namaste, ${data.name}! Your student profile setup is complete! 🎓🎒`, "success");
+      const isProActive = isStudentSubscribed(effectiveUser) || subscriptionState.isPro;
+      if (!isProActive && !isAdmin) {
+        setShowEnrollmentScreen(true);
+        setCurrentScreen("home");
+        addToast(`Profile saved for ${data.name}! 🎓 Please select your Pro Plan to continue.`, "info");
+      } else {
+        setCurrentScreen("syllabus"); 
+        addToast(`Namaste, ${data.name}! Your student profile setup is complete! 🎓🎒`, "success");
+      }
 
       // Write to Firestore in the background if Firebase user is authenticated
       if (auth.currentUser && !auth.currentUser.uid.startsWith("local_")) {
@@ -852,8 +861,15 @@ export default function App() {
         localStorage.setItem("cherry_student_profile", JSON.stringify(offlineProfileData));
       } catch (_) {}
       setShowOnboarding(false);
-      setCurrentScreen("syllabus");
-      addToast(`Profile setup in offline/fallback mode! 🎒`, "info");
+      const isProActive = isStudentSubscribed(effectiveUser) || subscriptionState.isPro;
+      if (!isProActive && !isAdmin) {
+        setShowEnrollmentScreen(true);
+        setCurrentScreen("home");
+        addToast(`Profile setup saved! 🎓 Please select your Pro Plan to continue.`, "info");
+      } else {
+        setCurrentScreen("syllabus");
+        addToast(`Profile setup in offline/fallback mode! 🎒`, "info");
+      }
       loadPastSessions(activeUid).catch((err) => {
         console.warn("Could not load past sessions:", err);
       });
@@ -917,6 +933,8 @@ export default function App() {
     try {
       localStorage.removeItem("local_active_user");
       localStorage.removeItem("cherry_student_profile");
+      clearUserSubscriptionState();
+      setSubscriptionState(getInitialSubscriptionState());
       setUser(null);
       setIsAdmin(false);
       setAdminViewMode("student");

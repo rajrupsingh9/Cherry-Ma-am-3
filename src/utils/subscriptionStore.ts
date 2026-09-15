@@ -551,6 +551,7 @@ export function recordStudentUtrPayment(params: {
   grade?: string;
   board?: string;
   subject?: string;
+  mediumOfLearning?: string;
   status?: "active" | "pending_verification";
 }): StudentSubscriptionRecord {
   const currentList = getStudentSubscriptions();
@@ -564,8 +565,15 @@ export function recordStudentUtrPayment(params: {
   const id = params.studentId || (params.studentEmail ? `std_${params.studentEmail.split("@")[0]}` : `std_${Date.now()}`);
 
   const existingIndex = currentList.findIndex(
-    (s) => s.id === id || (params.studentEmail && s.studentEmail === params.studentEmail) || s.studentName.toLowerCase() === params.studentName.toLowerCase()
+    (s) => s.id === id || (params.studentEmail && s.studentEmail && s.studentEmail.toLowerCase() === params.studentEmail.toLowerCase()) || s.studentName.toLowerCase() === params.studentName.toLowerCase()
   );
+
+  const formattedDate = now.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
   const newRecord: StudentSubscriptionRecord = {
     id,
@@ -574,28 +582,92 @@ export function recordStudentUtrPayment(params: {
     grade: params.grade || "Class 10",
     board: params.board || "CBSE",
     subject: params.subject || "Science",
+    mediumOfLearning: params.mediumOfLearning || "Hinglish",
     isPro: params.status === "active",
     status: params.status || "pending_verification",
     planId: targetPlan.id,
     planName: targetPlan.name,
     amountINR: params.amountINR || targetPlan.priceINR,
     utrNumber: params.utrNumber.trim(),
-    submittedAt: "Today, Just now",
+    submittedAt: formattedDate,
     activatedAt: params.status === "active" ? now.toISOString() : undefined,
     expiresAt: params.status === "active" ? expires.toISOString() : undefined,
-    notes: `Submitted UTR: ${params.utrNumber.trim()}`,
+    notes: `Submitted UTR: ${params.utrNumber.trim()} (Pending Admin Verification)`,
   };
 
   let updatedList: StudentSubscriptionRecord[];
   if (existingIndex >= 0) {
     updatedList = [...currentList];
-    updatedList[existingIndex] = { ...updatedList[existingIndex], ...newRecord };
+    updatedList[existingIndex] = { ...currentList[existingIndex], ...newRecord };
   } else {
     updatedList = [newRecord, ...currentList];
   }
 
   saveStudentSubscriptions(updatedList);
+
+  // Asynchronously sync to Firestore collection /studentSubscriptions
+  saveStudentSubscriptionToCloud(newRecord).catch((err) => {
+    console.warn("[recordStudentUtrPayment] Cloud save warning:", err);
+  });
+
   return newRecord;
+}
+
+/**
+ * Checks if a student's subscription request has been approved by the Admin
+ * Checks both local storage cache and Firestore cloud
+ */
+export async function checkStudentApprovalStatus(params: {
+  studentId?: string;
+  studentEmail?: string;
+  studentName?: string;
+}): Promise<{
+  isApproved: boolean;
+  status: "active" | "pending_verification" | "expired" | "none";
+  record: StudentSubscriptionRecord | null;
+}> {
+  // Sync latest records from Firestore
+  try {
+    await syncStudentSubscriptionsFromCloud();
+  } catch (_) {}
+
+  const currentList = getStudentSubscriptions();
+  const cleanEmail = params.studentEmail?.trim().toLowerCase();
+  const cleanName = params.studentName?.trim().toLowerCase();
+  const targetId = params.studentId?.trim();
+
+  const found = currentList.find((s) => {
+    if (targetId && (s.id === targetId || (s as any).userId === targetId)) return true;
+    if (cleanEmail && s.studentEmail && s.studentEmail.toLowerCase() === cleanEmail) return true;
+    if (cleanName && s.studentName && s.studentName.toLowerCase() === cleanName) return true;
+    return false;
+  });
+
+  if (!found) {
+    return { isApproved: false, status: "none", record: null };
+  }
+
+  if (found.isPro && found.status === "active") {
+    // Sync current user subscription state
+    const now = new Date();
+    const expires = found.expiresAt || new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000).toISOString();
+    const currentSub = loadSubscriptionState();
+    saveSubscriptionState({
+      ...currentSub,
+      isPro: true,
+      activePlanId: found.planId || "semiannual_149",
+      activePlanName: found.planName || "Pro Pass",
+      subscriptionStart: found.activatedAt || now.toISOString(),
+      subscriptionExpires: expires,
+    });
+    return { isApproved: true, status: "active", record: found };
+  }
+
+  return {
+    isApproved: false,
+    status: (found.status as any) || "pending_verification",
+    record: found,
+  };
 }
 
 export function approveStudentSubscription(params: {
@@ -962,6 +1034,37 @@ export function getSubscriptionExpiryStatus(expiresAt?: string): SubscriptionExp
 }
 
 /**
+ * Checks if a specific student user has an active, verified Pro subscription
+ */
+export function isStudentSubscribed(user?: { uid?: string; email?: string | null } | null): boolean {
+  if (!user || !user.uid) return false;
+  if (user.uid.startsWith("local_")) return false;
+  const subs = getStudentSubscriptions();
+  const cleanEmail = user.email?.trim().toLowerCase();
+  return subs.some((s) => {
+    const idMatch = s.id === user.uid || (s as any).userId === user.uid;
+    const emailMatch = Boolean(cleanEmail && s.studentEmail && s.studentEmail.toLowerCase() === cleanEmail);
+    if (!idMatch && !emailMatch) return false;
+    if (!s.isPro || s.status !== "active") return false;
+    if (s.expiresAt) {
+      return new Date(s.expiresAt).getTime() > Date.now();
+    }
+    return true;
+  });
+}
+
+/**
+ * Reset local subscription state on sign out
+ */
+export function clearUserSubscriptionState(): void {
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (_) {}
+  }
+}
+
+/**
  * PHASE 4: 1-CLICK FINANCIAL AUDIT LEDGER EXPORT (CSV)
  */
 export function exportSubscriptionsToCSV(subscriptions: StudentSubscriptionRecord[]): void {
@@ -1141,13 +1244,12 @@ export async function matchProvisionedStudent(params: {
   const cleanName = params.displayName?.trim().toLowerCase() || "";
   const currentUid = params.uid?.trim() || "";
 
-  // 1. Check local subscriptions first
+  // 1. Check local subscriptions first (strict match by UID, verified email, or verified phone)
   const localList = getStudentSubscriptions();
   let foundSub = localList.find((s) => {
-    if (currentUid && s.id === currentUid) return true;
+    if (currentUid && (s.id === currentUid || (s as any).userId === currentUid)) return true;
     if (cleanPhone && s.studentPhone && s.studentPhone.replace(/\D/g, "") === cleanPhone) return true;
     if (cleanEmail && s.studentEmail && s.studentEmail.toLowerCase() === cleanEmail) return true;
-    if (cleanName && s.studentName && s.studentName.toLowerCase() === cleanName) return true;
     return false;
   });
 
@@ -1159,13 +1261,11 @@ export async function matchProvisionedStudent(params: {
         snap.forEach((d) => {
           if (foundSub) return;
           const data = d.data() as StudentSubscriptionRecord;
-          if (currentUid && (d.id === currentUid || data.id === currentUid)) {
+          if (currentUid && (d.id === currentUid || data.id === currentUid || (data as any).userId === currentUid)) {
             foundSub = { ...data, id: d.id };
           } else if (cleanPhone && data.studentPhone && data.studentPhone.replace(/\D/g, "") === cleanPhone) {
             foundSub = { ...data, id: d.id };
           } else if (cleanEmail && data.studentEmail && data.studentEmail.toLowerCase() === cleanEmail) {
-            foundSub = { ...data, id: d.id };
-          } else if (cleanName && data.studentName && data.studentName.toLowerCase() === cleanName) {
             foundSub = { ...data, id: d.id };
           }
         });

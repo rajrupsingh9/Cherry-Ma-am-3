@@ -1,5 +1,5 @@
 // Cherry AI Classroom - Progressive Web App Service Worker
-const CACHE_NAME = 'cherry-ai-cache-v1';
+const CACHE_NAME = 'cherry-ai-cache-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

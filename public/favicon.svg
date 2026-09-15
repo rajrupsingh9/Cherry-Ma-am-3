@@ -1,8 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect width="64" height="64" rx="14" fill="#0a3641"/>
-  <path d="M32 10 L52 20 L32 30 L12 20 Z" fill="#c4f500"/>
-  <circle cx="24" cy="46" r="8" fill="#f43f5e"/>
-  <circle cx="40" cy="44" r="8" fill="#e11d48"/>
-  <path d="M24 38 C26 28 31 25 32 24" fill="none" stroke="#c4f500" stroke-width="2.5" stroke-linecap="round"/>
-  <path d="M40 36 C38 28 33 25 32 24" fill="none" stroke="#c4f500" stroke-width="2.5" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="favBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8B7CF8"/>
+      <stop offset="100%" stop-color="#6554E6"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#favBg)"/>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#FFFFFF" stroke-width="1" stroke-opacity="0.3"/>
+  <!-- Mortarboard Cap -->
+  <polygon points="32,9 50,18 32,27 14,18" fill="#FFFFFF"/>
+  <circle cx="32" cy="18" r="1.5" fill="#F59E0B"/>
+  <path d="M 32,18 Q 45,20 46,26" fill="none" stroke="#F59E0B" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- Stems & Leaf -->
+  <path d="M32 32 C 37 26 44 27 45 30 C 42 34 36 34 32 32 Z" fill="#10B981"/>
+  <path d="M23 44 C 24 35 29 33 32 32" fill="none" stroke="#059669" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M41 43 C 40 35 35 33 32 32" fill="none" stroke="#059669" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- Cherries -->
+  <circle cx="23" cy="45" r="7.5" fill="#FF3366"/>
+  <ellipse cx="20" cy="42" rx="2.5" ry="1.5" fill="#FFFFFF" opacity="0.8" transform="rotate(-30 20 42)"/>
+  <circle cx="41" cy="44" r="7.5" fill="#E11D48"/>
+  <ellipse cx="38" cy="41" rx="2.5" ry="1.5" fill="#FFFFFF" opacity="0.8" transform="rotate(-30 38 41)"/>
 </svg>

@@ -2,6 +2,42 @@
 @import "tailwindcss";
 @import "katex/dist/katex.min.css";
 
+/* ==========================================================================
+   Native Mobile App Screen Lock (Prevent Pinch-to-Zoom & Double-Tap Scaling)
+   Behaves 100% like a native Android APK or iOS app screen
+   ========================================================================== */
+html,
+body,
+#root {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior-y: contain;
+  -webkit-touch-callout: none;
+}
+
+/* Allow text selection inside inputs, code, and math equations */
+input,
+textarea,
+pre,
+code,
+.selectable-text,
+.katex,
+[contenteditable="true"] {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+/* Interactive elements prevent double-tap delays and zoom triggers */
+button,
+a,
+input,
+select,
+textarea,
+[role="button"] {
+  touch-action: manipulation;
+}
+
 /* Blackboard Chalkboard Themes & Textures */
 .blackboard-chalk {
   background-color: #0c201a;

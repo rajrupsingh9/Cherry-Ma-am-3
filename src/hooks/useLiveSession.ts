@@ -194,20 +194,6 @@ export function useLiveSession({
   const lastReportedUserVol = useRef<number>(0);
   const lastReportedCherryVol = useRef<number>(0);
 
-  // Pre-initialize and pre-warm playback context and recording destination stream immediately on hook mount
-  useEffect(() => {
-    try {
-      const playbackCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      playbackCtxRef.current = playbackCtx;
-      const cherryAudioDest = playbackCtx.createMediaStreamDestination();
-      playbackStreamDestRef.current = cherryAudioDest;
-      setPlaybackStream(cherryAudioDest.stream);
-      console.log("[useLiveSession] Mounted - Unified recording audio destination pre-warmed!");
-    } catch (e) {
-      console.warn("[useLiveSession] Failed pre-warming audio recording track on mount:", e);
-    }
-  }, []);
-
   // Helper: helper function to compute PCM16 output back to standard Float32
   const pcm16ToFloat32 = (buffer: ArrayBuffer): Float32Array => {
     const view = new DataView(buffer);

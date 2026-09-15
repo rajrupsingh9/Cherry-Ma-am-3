@@ -24,6 +24,7 @@ import { LearnerProfileModal } from "./components/LearnerProfileModal";
 import { SubscriptionModal } from "./components/SubscriptionModal";
 import { QuickDoubtWidget } from "./components/QuickDoubtWidget";
 import { PwaInstallPromptModal } from "./components/PwaInstallPromptModal";
+import { PostLoginMicPromptModal } from "./components/PostLoginMicPromptModal";
 import AudioPodcastPlayerModal from "./components/AudioPodcastPlayerModal";
 import { PostLessonAudioModal, PostLessonSessionData } from "./components/PostLessonAudioModal";
 import { generateAudioPodcast } from "./services/podcastService";
@@ -121,6 +122,7 @@ export default function App() {
   const [showBrandSplash, setShowBrandSplash] = useState(true);
   const [showIntroWalkthrough, setShowIntroWalkthrough] = useState(false);
   const [showEnrollmentScreen, setShowEnrollmentScreen] = useState(false);
+  const [showPostLoginMicModal, setShowPostLoginMicModal] = useState(false);
 
   // Role-Based Admin states
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
@@ -311,6 +313,45 @@ export default function App() {
       }
     } catch (_) {}
   }, []);
+
+  // Post-Login Microphone Permission Handlers (Deferred strictly until student is authenticated)
+  const handleAllowPostLoginMic = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop tracks immediately so browser mic indicator doesn't linger until class connects
+      stream.getTracks().forEach((track) => track.stop());
+      sessionStorage.setItem("cherry_mic_prompt_handled", "true");
+      setShowPostLoginMicModal(false);
+      addToast("Microphone enabled! Aap Cherry Ma'am se bolkar doubts pooch sakte hain 🎙️✨", "success");
+    } catch (err: any) {
+      console.warn("[PostLoginMic] Permission request denied or dismissed:", err);
+      sessionStorage.setItem("cherry_mic_prompt_handled", "true");
+      setShowPostLoginMicModal(false);
+      addToast("Speaker-Only Mode active. Aap text se bhi doubts pooch sakte hain 🔊💬", "info");
+    }
+  };
+
+  const handleDismissPostLoginMic = () => {
+    sessionStorage.setItem("cherry_mic_prompt_handled", "true");
+    setShowPostLoginMicModal(false);
+  };
+
+  // Trigger microphone setup modal only after student is logged in and past splash/intro/enrollment
+  useEffect(() => {
+    if (
+      user &&
+      !isAdmin &&
+      !showBrandSplash &&
+      !showIntroWalkthrough &&
+      !showEnrollmentScreen &&
+      sessionStorage.getItem("cherry_mic_prompt_handled") !== "true"
+    ) {
+      const timer = setTimeout(() => {
+        setShowPostLoginMicModal(true);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [user, isAdmin, showBrandSplash, showIntroWalkthrough, showEnrollmentScreen]);
 
   // Parse markdown content into distinct sequential slides or topics with metadata stripping
   const topics = useMemo(() => {
@@ -933,6 +974,8 @@ export default function App() {
     try {
       localStorage.removeItem("local_active_user");
       localStorage.removeItem("cherry_student_profile");
+      localStorage.removeItem("cherry_active_doc");
+      setActiveDocument(null);
       clearUserSubscriptionState();
       setSubscriptionState(getInitialSubscriptionState());
       setUser(null);
@@ -1367,6 +1410,11 @@ export default function App() {
 
   // Automatically capture the whiteboard content as a comprehensive snapshot for a given topic
   const autoCaptureSnapshot = useCallback(async (topicIndex: number, boardContent: string, isManual = false) => {
+    // Strictly prevent any capture while on splash, intro, enrollment, or outside classroom
+    if (showBrandSplash || showIntroWalkthrough || showEnrollmentScreen || currentScreen !== "classroom") {
+      return;
+    }
+
     const currentUser = auth.currentUser || user;
     if (!boardContent || !boardContent.trim()) return;
 
@@ -1564,7 +1612,7 @@ export default function App() {
     } catch (err) {
       console.warn("Whiteboard snapshot capture failed:", err);
     }
-  }, [topics, addToast, theme, user, studentDetails.subject, generateFallbackChalkboardImage, isBoardContentComplete, sessionId]);
+  }, [topics, addToast, theme, user, studentDetails.subject, generateFallbackChalkboardImage, isBoardContentComplete, sessionId, showBrandSplash, showIntroWalkthrough, showEnrollmentScreen, currentScreen]);
 
   // Handle manual/instant save snapshots triggered by onClick handler on active Blackboard
   const handleManualSaveSnapshot = useCallback(async () => {
@@ -1576,16 +1624,27 @@ export default function App() {
   }, [activeTopicIndex, customBoardContent, autoCaptureSnapshot, addToast]);
 
   // Automatic snapshot trigger that takes a screenshot of the blackboard 
-  // after writing stabilizes (7 seconds of inactivity) and content is fully complete
+  // after writing stabilizes (7 seconds of inactivity) and content is fully complete.
+  // STRICT GUARD: Runs ONLY when the student is in an active classroom session, never on splash/intro/enrollment.
   useEffect(() => {
-    if (!customBoardContent || !customBoardContent.trim() || !isBoardContentComplete(customBoardContent)) return;
+    if (
+      currentScreen !== "classroom" ||
+      showBrandSplash ||
+      showIntroWalkthrough ||
+      showEnrollmentScreen ||
+      !customBoardContent ||
+      !customBoardContent.trim() ||
+      !isBoardContentComplete(customBoardContent)
+    ) {
+      return;
+    }
 
     const delayDebounceFn = setTimeout(() => {
       autoCaptureSnapshot(activeTopicIndex, customBoardContent);
     }, 7000); // 7 seconds debounce so Cherry Ma'am completes whole derivation before capturing
 
     return () => clearTimeout(delayDebounceFn);
-  }, [customBoardContent, activeTopicIndex, autoCaptureSnapshot, isBoardContentComplete]);
+  }, [customBoardContent, activeTopicIndex, autoCaptureSnapshot, isBoardContentComplete, currentScreen, showBrandSplash, showIntroWalkthrough, showEnrollmentScreen]);
 
   const handleLoadPastSession = async (sess: any) => {
     try {
@@ -1847,6 +1906,7 @@ export default function App() {
 
   // Synchronize customBoardContent specifically for Phase 1 ('intro') so the blackboard immediately displays the topic heading and prediction poll structure when empty
   useEffect(() => {
+    if (currentScreen !== "classroom" || showBrandSplash || showIntroWalkthrough || showEnrollmentScreen) return;
     if (activeDocument?.mode === "open_board" || activeDocument?.mode === "discuss_concept" || activeDocument?.mode === "explain_experiment") return;
     const currentPhase = (teachingPhase || "intro").toLowerCase();
     const isIntroPhase = currentPhase === "intro";
@@ -1878,10 +1938,11 @@ export default function App() {
         setCustomBoardContent(phase1BoardContent);
       }
     }
-  }, [teachingPhase, activeTopicIndex, topics, customBoardContent, studentDetails.subject, activeDocument]);
+  }, [teachingPhase, activeTopicIndex, topics, customBoardContent, studentDetails.subject, activeDocument, currentScreen, showBrandSplash, showIntroWalkthrough, showEnrollmentScreen]);
 
   // Synchronize customBoardContent with topics when transitioning to concept/example/doubt phases so the board displays slide contents immediately if empty
   useEffect(() => {
+    if (currentScreen !== "classroom" || showBrandSplash || showIntroWalkthrough || showEnrollmentScreen) return;
     if (activeDocument?.mode === "open_board" || activeDocument?.mode === "discuss_concept" || activeDocument?.mode === "explain_experiment") return;
     const currentPhase = (teachingPhase || "intro").toLowerCase();
     const isConceptOrLater = currentPhase === "concept" || currentPhase === "example" || currentPhase === "doubt" || currentPhase === "transition";
@@ -1899,7 +1960,7 @@ export default function App() {
         }
       }
     }
-  }, [teachingPhase, activeTopicIndex, topics, customBoardContent, activeDocument]);
+  }, [teachingPhase, activeTopicIndex, topics, customBoardContent, activeDocument, currentScreen, showBrandSplash, showIntroWalkthrough, showEnrollmentScreen]);
 
   useEffect(() => {
     onNextTopicRef.current = handleNextTopic;
@@ -4337,8 +4398,16 @@ MANDATORY PHASE 1 ('intro') EXECUTION:
         onToast={addToast}
       />
 
+      {/* POST-LOGIN MICROPHONE SETUP MODAL (Deferred from Splash & Enrollment) */}
+      <PostLoginMicPromptModal
+        isOpen={showPostLoginMicModal && !showBrandSplash && !showIntroWalkthrough && !showEnrollmentScreen && !isAdmin}
+        studentName={studentDetails.name || user?.displayName || ""}
+        onAllow={handleAllowPostLoginMic}
+        onDismiss={handleDismissPostLoginMic}
+      />
+
       {/* ABSOLUTE FLOATING SYSTEM TOAST notifications */}
-      {currentScreen !== "classroom" && (
+      {currentScreen !== "classroom" && !showBrandSplash && !showIntroWalkthrough && !showEnrollmentScreen && (
         <div id="toast-container" className="fixed top-4 sm:top-6 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center space-y-2 pointer-events-none w-[calc(100%-2rem)] max-w-sm">
           <AnimatePresence>
             {toasts.map((toast) => (

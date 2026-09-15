@@ -779,7 +779,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                     Google Sign-In Required
                   </h2>
                   <p className="text-xs text-slate-600 font-medium mt-1">
-                    Please log in with your Google account to secure your 6-month subscription, save your syllabus progress, and activate your student ID.
+                    Please log in with your Google account to create your verified student profile, save your study progress, and access the classroom.
                   </p>
                 </div>
 
@@ -829,7 +829,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                           <ShieldCheck className="w-5 h-5" />
                         </div>
                         <p className="text-[11px] text-slate-700 font-medium leading-relaxed">
-                          Your account binds to your <strong>₹149 6-Month Pro Pass</strong> so you never lose your notes, test marks, or referral rewards.
+                          Sign in to secure your student account, syllabus notes, test analytics, and referral wallet safely across all your devices.
                         </p>
                       </div>
 
@@ -1639,7 +1639,7 @@ export const StudentEnrollmentScreen: React.FC<StudentEnrollmentScreenProps> = (
                           Use Cherry AI Cloud Engine
                         </h4>
                         <p className="text-[10.5px] text-slate-500 font-medium">
-                          Included with your ₹149 6-Month Pro Pass. Instant setup with zero configuration needed.
+                          Included with your {specialPlan.name || "Student Pass"} (₹{specialPlan.priceINR}). Instant setup with zero configuration needed.
                         </p>
                       </div>
                     </div>
